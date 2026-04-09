@@ -1,0 +1,18 @@
+# Data Fortress — Streamlit dashboard dependencies
+# Install with: pip install -r requirements.txt
+
+# Streamlit: the web framework that turns Python scripts into interactive dashboards.
+# Pages in dashboard/pages/ are auto-discovered by Streamlit's multi-page feature.
+streamlit>=1.32.0
+
+# Plotly: interactive charts (pie charts, bar charts, treemaps) rendered in the browser.
+# We use plotly.express (the high-level API) for most charts.
+plotly>=5.20.0
+
+# Pandas: tabular data manipulation. We load SQLite query results into DataFrames
+# so Streamlit's st.dataframe() can display and sort them with zero extra code.
+pandas>=2.2.0
+
+# humanize: converts raw numbers to human-readable strings in Python.
+# e.g. humanize.naturalsize(1_048_576) → "1.0 MB"
+humanize>=4.9.0

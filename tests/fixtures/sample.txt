@@ -1,0 +1,4 @@
+This is a sample plain-text fixture file used by Data Fortress integration tests.
+It contains enough text to verify that the scanner indexes it correctly.
+
+Keywords: invoice budget quarterly report

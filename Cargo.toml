@@ -1,0 +1,123 @@
+[package]
+name        = "data-fortress"
+version     = "0.1.0"
+edition     = "2021"
+description = "Personal data management system — scan, deduplicate, organize, search, and backup files"
+authors     = ["Thomas Lane"]
+license     = "MIT"
+readme      = "README.md"
+
+[[bin]]
+name = "data-fortress"
+path = "src/main.rs"
+
+[dependencies]
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+# clap: argument parser. "derive" = define commands as structs, "color" = ANSI
+# help output, "env" = flags can also be set via environment variables.
+clap = { version = "4", features = ["derive", "color", "env"] }
+
+# ── Error handling ────────────────────────────────────────────────────────────
+# anyhow: ergonomic error propagation with `?` and context chaining.
+anyhow = "1"
+# thiserror: derive macro for our structured FortressError enum in error.rs.
+thiserror = "1"
+
+# ── Database ──────────────────────────────────────────────────────────────────
+# rusqlite: SQLite bindings. "bundled" statically links libsqlite3 (no system
+# dependency). "chrono" enables direct storage of DateTime<Utc> values.
+rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
+
+# ── Parallelism ───────────────────────────────────────────────────────────────
+# rayon: work-stealing thread pool. `.par_iter()` uses every CPU core.
+rayon = "1"
+
+# ── File system walking ───────────────────────────────────────────────────────
+# walkdir: recursive traversal that handles symlinks and permission errors.
+walkdir = "2"
+
+# ── Hashing (deduplication) ───────────────────────────────────────────────────
+# blake3: fastest cryptographically secure hash. Streaming — never loads a
+# full large file into memory.
+blake3 = "1"
+
+# ── File type detection ───────────────────────────────────────────────────────
+# infer: detects file type from magic bytes, not just the extension.
+infer = "0.16"
+# mime_guess: extension → MIME type fallback for plain text and edge cases.
+mime_guess = "2"
+
+# ── EXIF / media metadata ─────────────────────────────────────────────────────
+# kamadak-exif: reads EXIF tags from JPEG, TIFF, HEIF, PNG (GPS, camera, etc.)
+kamadak-exif = "0.5"
+
+# ── Text extraction ───────────────────────────────────────────────────────────
+# pdf-extract: plain text from PDFs, no external tools required.
+pdf-extract = "0.7"
+# calamine: reads .xlsx / .xls cell text without Excel or LibreOffice.
+calamine = "0.24"
+# zip: DOCX/PPTX are ZIP archives — we unpack and parse the XML inside.
+zip = "2"
+# quick-xml: fast event-based XML parser for reading DOCX content XML.
+quick-xml = "0.36"
+
+# ── Compression (backup) ──────────────────────────────────────────────────────
+# zstd: Zstandard compression. "zstdmt" enables multi-threaded compression.
+zstd = { version = "0.13", features = ["zstdmt"] }
+# tar: build TAR archives for backup. We wrap the TAR stream in zstd compression.
+tar = "0.4"
+
+# ── Serialization ─────────────────────────────────────────────────────────────
+# serde: universal serialization. "derive" = #[derive(Serialize, Deserialize)].
+serde = { version = "1", features = ["derive"] }
+# serde_json: serialize structs to JSON for Streamlit dashboard IPC.
+serde_json = "1"
+
+# ── Date and time ─────────────────────────────────────────────────────────────
+# chrono: date/time types and formatting. "serde" = ISO 8601 auto-serialization.
+chrono = { version = "0.4", features = ["serde"] }
+
+# ── Config paths ──────────────────────────────────────────────────────────────
+# dirs: resolves XDG standard dirs (~/.local/share, ~/.config, etc.) on Linux.
+dirs = "5"
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+# tracing: structured, levelled diagnostics. RUST_LOG=debug for verbose output.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# ── Progress UI ───────────────────────────────────────────────────────────────
+# indicatif: progress bars and spinners for scans, hashing, and backups.
+indicatif = "0.17"
+
+# ── Human-readable output ─────────────────────────────────────────────────────
+# bytesize: converts raw byte counts to "1.4 GB", "320 MB", etc.
+bytesize = { version = "1", features = ["serde"] }
+
+# ── Patterns ──────────────────────────────────────────────────────────────────
+# regex: search query parsing and filename normalization in the organizer.
+regex = "1"
+
+# ── UUID ──────────────────────────────────────────────────────────────────────
+# uuid: unique IDs for backup manifests. "v4" = random, "serde" = JSON-safe.
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+# tempfile: auto-cleaned temp dirs/files for hermetic tests.
+tempfile = "3"
+# assert_cmd: invoke the compiled binary in integration tests by name.
+assert_cmd = "2"
+# predicates: fluent stdout/stderr assertions alongside assert_cmd.
+predicates = "3"
+
+[profile.dev]
+opt-level = 0
+debug     = true
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+strip         = "symbols"
+panic         = "abort"

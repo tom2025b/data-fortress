@@ -1,0 +1,90 @@
+# .gitignore — Data Fortress
+# ---------------------------
+# Tells Git which files and directories to never track.
+# Organised by tool/language for easy scanning.
+
+# ── Rust / Cargo ──────────────────────────────────────────────────────────────
+
+# The target/ directory holds ALL compiled output — debug objects, release
+# binaries, incremental build caches, doc output, test binaries. It can be
+# several GB and is fully reproducible from source, so we never commit it.
+/target/
+
+# Cargo.lock is committed for binary projects (it pins exact dependency versions,
+# which makes builds reproducible on other machines). For library crates it's
+# usually omitted. Data Fortress is a binary, so Cargo.lock IS tracked.
+# (No rule here — absence of a rule means "track it".)
+
+# ── Python / Streamlit ────────────────────────────────────────────────────────
+
+# Python bytecode caches — generated automatically, not portable between machines.
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments — each developer creates their own.
+.venv/
+venv/
+env/
+
+# Pytest / coverage artefacts.
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy type-check cache.
+.mypy_cache/
+
+# Streamlit's own cache directory (stores cached function results on disk).
+.streamlit/
+
+# ── Database and user data ────────────────────────────────────────────────────
+
+# SQLite database files — created at runtime by `data-fortress scan`.
+# Never commit a user's actual database; it contains personal file metadata.
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup archives produced by `data-fortress backup create`.
+*.tar.zst
+*.zst
+
+# Undo logs written by `data-fortress organize`.
+.fortress_undo.json
+
+# ── Editor / IDE ──────────────────────────────────────────────────────────────
+
+# VS Code workspace settings (project-local overrides are personal preference).
+.vscode/
+
+# JetBrains IDEs (CLion, PyCharm, IntelliJ).
+.idea/
+
+# Vim swap files.
+*.swp
+*.swo
+*~
+
+# macOS metadata files (if anyone ever touches this on a Mac).
+.DS_Store
+
+# ── Secrets and local config ──────────────────────────────────────────────────
+
+# Environment variable files — often contain API keys or local paths.
+.env
+.env.*
+!.env.example
+
+# Local config overrides (non-XDG paths, development test paths).
+config.local.json
+
+# ── Test artefacts ────────────────────────────────────────────────────────────
+
+# Temporary directories created by integration tests using the `tempfile` crate.
+/tmp/fortress-test-*/
+
+# ── Documentation build output ────────────────────────────────────────────────
+
+# Rust docs built by `cargo doc` or `make doc`.
+/doc/
