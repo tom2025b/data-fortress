@@ -8,28 +8,30 @@
 <p class="text-slate-400 text-sm mb-8">Last scan: {{ last_scan }}</p>
 
 <!-- ── Four metric cards ──────────────────────────────────────────────────── -->
+<!-- border-t-2 + border-t-green-600 overrides the default border-slate-700  -->
+<!-- on just the top edge, giving each card a green accent stripe.            -->
 <div class="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-10">
 
-  <div class="bg-slate-800 rounded-xl p-5 border border-slate-700">
-    <p class="text-xs text-slate-400 uppercase tracking-wider mb-1">Total Files</p>
-    <p class="text-3xl font-bold">{{ total_files }}</p>
+  <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 border-t-2 border-t-green-600">
+    <p class="text-xs text-slate-400 uppercase tracking-wider mb-2">Total Files</p>
+    <p class="text-4xl font-extrabold">{{ total_files }}</p>
   </div>
 
-  <div class="bg-slate-800 rounded-xl p-5 border border-slate-700">
-    <p class="text-xs text-slate-400 uppercase tracking-wider mb-1">Storage Used</p>
-    <p class="text-3xl font-bold">{{ total_bytes }}</p>
+  <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 border-t-2 border-t-green-600">
+    <p class="text-xs text-slate-400 uppercase tracking-wider mb-2">Storage Used</p>
+    <p class="text-4xl font-extrabold">{{ total_bytes }}</p>
   </div>
 
-  <div class="bg-slate-800 rounded-xl p-5 border border-slate-700">
-    <p class="text-xs text-slate-400 uppercase tracking-wider mb-1">Duplicate Groups</p>
-    <p class="text-3xl font-bold {% if duplicate_groups > 0 %}text-amber-400{% endif %}">
+  <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 border-t-2 border-t-green-600">
+    <p class="text-xs text-slate-400 uppercase tracking-wider mb-2">Duplicate Groups</p>
+    <p class="text-4xl font-extrabold {% if duplicate_groups > 0 %}text-amber-400{% endif %}">
       {{ duplicate_groups }}
     </p>
   </div>
 
-  <div class="bg-slate-800 rounded-xl p-5 border border-slate-700">
-    <p class="text-xs text-slate-400 uppercase tracking-wider mb-1">Wasted Space</p>
-    <p class="text-3xl font-bold {% if wasted_bytes != "0 B" %}text-red-400{% endif %}">
+  <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 border-t-2 border-t-green-600">
+    <p class="text-xs text-slate-400 uppercase tracking-wider mb-2">Wasted Space</p>
+    <p class="text-4xl font-extrabold {% if wasted_bytes != "0 B" %}text-red-400{% endif %}">
       {{ wasted_bytes }}
     </p>
   </div>

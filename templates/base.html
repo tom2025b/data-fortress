@@ -31,14 +31,14 @@
   <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
 </head>
 
-<body class="h-full text-slate-100 flex">
+<body class="h-full bg-slate-950 text-slate-100 flex">
 
   <!-- ── Sidebar navigation ───────────────────────────────────────────────── -->
-  <nav class="w-56 flex-shrink-0 bg-slate-900 border-r border-slate-800
+  <nav class="w-56 flex-shrink-0 bg-slate-900 border-r border-slate-800 shadow-xl
               flex flex-col py-6 px-4 gap-1">
 
-    <!-- Logo / title -->
-    <div class="mb-6 px-2">
+    <!-- Logo / title — bottom border separates it from the nav links -->
+    <div class="mb-6 px-2 pb-4 border-b border-slate-800">
       <span class="text-xl font-bold tracking-tight">🏰 Data Fortress</span>
       <p class="text-xs text-slate-400 mt-0.5">Personal File Management</p>
     </div>
@@ -49,9 +49,16 @@
     <a href="/search"     class="nav-link {% block nav_search %}{% endblock %}">🔍 Search</a>
     <a href="/backup"     class="nav-link {% block nav_backup %}{% endblock %}">💾 Backup</a>
 
-    <!-- Spacer pushes the footer hint to the bottom -->
+    <!-- Spacer pushes the footer block to the bottom -->
     <div class="flex-1"></div>
-    <p class="text-xs text-slate-500 px-2">Read-only view<br>Use CLI to scan/dedup</p>
+    <div class="px-2 space-y-2">
+      <p class="text-xs text-slate-500">Read-only view · Use CLI to scan/dedup</p>
+      <!-- Version footer — separated by a subtle rule -->
+      <div class="pt-2 border-t border-slate-800">
+        <p class="text-xs text-slate-600">Data Fortress v0.3.0</p>
+        <p class="text-xs text-slate-700">© 2026</p>
+      </div>
+    </div>
   </nav>
 
   <!-- ── Main content area ────────────────────────────────────────────────── -->
