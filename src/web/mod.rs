@@ -165,46 +165,23 @@ pub fn create_router(state: AppState) -> Router {
 // =============================================================================
 // Handlers
 // =============================================================================
-// Each handler follows the same pattern:
-//   1. Clone the Arc (cheap)
-//   2. Move it into spawn_blocking (runs on a thread pool, not the async executor)
-//   3. Lock the Mutex, run the SQL query, return results
-//   4. Build and return the template
+// Each handler delegates to `run_db`, which runs the synchronous SQL query on
+// the blocking thread-pool and collapses both failure modes to a `String`.
+// The handler then maps Ok to a rendered template and Err to an error page.
 
 /// `GET /` — Overview page.
 async fn overview_handler(State(state): State<AppState>) -> Response {
-    let db = state.db.clone();
-
-    let result = tokio::task::spawn_blocking(move || {
-        // Lock the connection for the duration of this closure.
-        // `unwrap_or_else(|p| p.into_inner())` recovers from mutex poisoning
-        // (which happens if another thread panicked while holding the lock).
-        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-        query_overview(&conn)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(tmpl)) => tmpl.into_response(),
-        Ok(Err(e))   => error_page(&format!("Database error: {e}")),
-        Err(e)       => error_page(&format!("Task error: {e}")),
+    match run_db(state.db, query_overview).await {
+        Ok(tmpl) => tmpl.into_response(),
+        Err(msg) => error_page(&msg),
     }
 }
 
 /// `GET /duplicates` — Duplicate groups page.
 async fn duplicates_handler(State(state): State<AppState>) -> Response {
-    let db = state.db.clone();
-
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-        query_duplicates(&conn)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(tmpl)) => tmpl.into_response(),
-        Ok(Err(e))   => error_page(&format!("Database error: {e}")),
-        Err(e)       => error_page(&format!("Task error: {e}")),
+    match run_db(state.db, query_duplicates).await {
+        Ok(tmpl) => tmpl.into_response(),
+        Err(msg) => error_page(&msg),
     }
 }
 
@@ -233,40 +210,23 @@ async fn search_api_handler(
         .into_response();
     }
 
-    let db = state.db.clone();
-    let q  = query.clone();
-    let c  = category.clone();
+    let q = query.clone();
+    let c = category.clone();
 
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-        query_search(&conn, &q, c.as_deref(), 100)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(rows)) => {
+    match run_db(state.db, move |conn| query_search(conn, &q, c.as_deref(), 100)).await {
+        Ok(rows) => {
             let count = rows.len();
             SearchResultsTemplate { results: rows, query, count }.into_response()
         }
-        Ok(Err(e)) => error_fragment(&format!("Search error: {e}")),
-        Err(e)     => error_fragment(&format!("Task error: {e}")),
+        Err(msg) => error_fragment(&msg),
     }
 }
 
 /// `GET /backup` — Backup history page.
 async fn backup_handler(State(state): State<AppState>) -> Response {
-    let db = state.db.clone();
-
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
-        query_backups(&conn)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(tmpl)) => tmpl.into_response(),
-        Ok(Err(e))   => error_page(&format!("Database error: {e}")),
-        Err(e)       => error_page(&format!("Task error: {e}")),
+    match run_db(state.db, query_backups).await {
+        Ok(tmpl) => tmpl.into_response(),
+        Err(msg) => error_page(&msg),
     }
 }
 
@@ -461,7 +421,7 @@ fn query_search(
     Ok(rows)
 }
 
-/// Row mapper for `query_search` (with category param).
+/// Map a `query_search` result row to a `SearchRow`.
 fn map_search_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SearchRow> {
     Ok(SearchRow {
         name:     row.get(0)?,
@@ -482,37 +442,39 @@ fn query_backups(conn: &Connection) -> rusqlite::Result<BackupTemplate> {
     let mut total_original:   u64 = 0;
     let mut total_compressed: u64 = 0;
 
-    let backups: Vec<BackupRow> = stmt
+    // Build the Vec with a for loop so the accumulator updates are explicit
+    // rather than hidden inside a `.map()` closure (which should be pure).
+    let mut backups: Vec<BackupRow> = Vec::new();
+    for row in stmt
         .query_map([], |row| {
             let label:        String = row.get(0)?;
             let archive_path: String = row.get(1)?;
             let orig:         i64    = row.get(2)?;
             let comp:         i64    = row.get(3)?;
             let created_at:   String = row.get(4)?;
-
             Ok((label, archive_path, orig as u64, comp as u64, created_at))
         })?
         .filter_map(|r| r.ok())
-        .map(|(label, archive_path, orig, comp, created_at)| {
-            total_original   += orig;
-            total_compressed += comp;
+    {
+        let (label, archive_path, orig, comp, created_at) = row;
+        total_original   += orig;
+        total_compressed += comp;
 
-            let ratio = if orig > 0 {
-                format!("{:.1}%", 100.0 * (1.0 - comp as f64 / orig as f64))
-            } else {
-                "—".into()
-            };
+        let ratio = if orig > 0 {
+            format!("{:.1}%", 100.0 * (1.0 - comp as f64 / orig as f64))
+        } else {
+            "—".into()
+        };
 
-            BackupRow {
-                label,
-                created_at: created_at.chars().take(19).collect(),
-                original:   fmt_bytes(orig),
-                compressed: fmt_bytes(comp),
-                ratio,
-                archive_path,
-            }
-        })
-        .collect();
+        backups.push(BackupRow {
+            label,
+            created_at: created_at.chars().take(19).collect(),
+            original:   fmt_bytes(orig),
+            compressed: fmt_bytes(comp),
+            ratio,
+            archive_path,
+        });
+    }
 
     let saved = total_original.saturating_sub(total_compressed);
 
@@ -528,6 +490,33 @@ fn query_backups(conn: &Connection) -> rusqlite::Result<BackupTemplate> {
 // Utilities
 // =============================================================================
 
+/// Run a synchronous database operation on the blocking thread-pool.
+///
+/// `rusqlite` is not async-aware, so every DB call must happen on a real OS
+/// thread (via `spawn_blocking`) rather than inside the async executor, which
+/// is a lightweight cooperative runtime — blocking it stalls all other tasks.
+///
+/// Both failure modes are collapsed to a `String` so callers decide how to
+/// render the error (full-page vs. HTMX fragment):
+///   - join error   — the blocking task panicked
+///   - rusqlite error — bad query, schema mismatch, missing table, etc.
+async fn run_db<F, T>(db: Arc<Mutex<Connection>>, f: F) -> Result<T, String>
+where
+    F: FnOnce(&Connection) -> rusqlite::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        // `unwrap_or_else(|p| p.into_inner())` recovers from mutex poisoning
+        // (occurs if a previous thread panicked while holding the lock).
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+        f(&conn)
+    })
+    .await
+    // Flatten the nested Result: JoinError first, then rusqlite::Error.
+    .map_err(|e| format!("Task error: {e}"))?
+    .map_err(|e| format!("Database error: {e}"))
+}
+
 /// Format raw bytes as a human-readable string using binary prefixes.
 /// e.g. 1_073_741_824 → "1.0 GiB"
 fn fmt_bytes(bytes: u64) -> String {
@@ -535,11 +524,49 @@ fn fmt_bytes(bytes: u64) -> String {
 }
 
 /// Return a full-page HTML error response (for page-level failures).
+///
+/// Uses inline CSS so the error page renders correctly even if static assets
+/// or the CDN are unreachable (which is likely when something has gone wrong).
 fn error_page(msg: &str) -> Response {
     Html(format!(
-        r#"<!doctype html><html><body style="font-family:sans-serif;padding:2rem">
-        <h1 style="color:#ef4444">Error</h1><p>{msg}</p>
-        <a href="/">← Back to overview</a></body></html>"#
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Error — Data Fortress</title>
+  <style>
+    *, *::before, *::after {{ box-sizing: border-box; }}
+    body {{
+      font-family: system-ui, sans-serif;
+      background: #0f172a; color: #e2e8f0;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; margin: 0; padding: 1rem;
+    }}
+    .card {{
+      background: #1e293b;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      border-radius: .75rem;
+      padding: 2rem 2.5rem;
+      max-width: 480px; width: 100%;
+    }}
+    h1 {{ margin: 0 0 .75rem; color: #ef4444; font-size: 1.4rem; }}
+    pre {{
+      margin: 0 0 1.5rem; color: #94a3b8;
+      font-size: .85rem; font-family: ui-monospace, monospace;
+      white-space: pre-wrap; word-break: break-all;
+    }}
+    a {{ color: #38bdf8; text-decoration: none; font-size: .9rem; }}
+    a:hover {{ text-decoration: underline; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Something went wrong</h1>
+    <pre>{msg}</pre>
+    <a href="/">&#8592; Back to overview</a>
+  </div>
+</body>
+</html>"#
     ))
     .into_response()
 }
