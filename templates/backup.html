@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Backup — Data Fortress{% endblock %}
+{% block nav_backup %}active{% endblock %}
+
+{% block content %}
+
+<h1 class="text-2xl font-bold mb-1">Backup</h1>
+<p class="text-slate-400 text-sm mb-6">
+  Versioned TAR+zstd archives. Create new backups from the CLI:
+</p>
+
+<!-- CLI quick-reference card -->
+<div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-8 font-mono text-sm">
+  <p class="text-slate-400 text-xs mb-2 uppercase tracking-wider">Quick commands</p>
+  <p><span class="text-slate-500">$</span> <span class="text-green-400">data-fortress backup create</span> <span class="text-slate-300">--label "before-cleanup"</span></p>
+  <p><span class="text-slate-500">$</span> <span class="text-green-400">data-fortress backup create</span> <span class="text-slate-300">--category document --compression 9</span></p>
+  <p><span class="text-slate-500">$</span> <span class="text-green-400">data-fortress backup list</span></p>
+</div>
+
+<!-- ── Totals row ─────────────────────────────────────────────────────────── -->
+{% if !backups.is_empty() %}
+<div class="flex gap-4 mb-8">
+  <div class="bg-slate-800 rounded-xl px-6 py-4 border border-slate-700">
+    <p class="text-xs text-slate-400 uppercase tracking-wider mb-0.5">Data Backed Up</p>
+    <p class="text-2xl font-bold">{{ total_original }}</p>
+  </div>
+  <div class="bg-slate-800 rounded-xl px-6 py-4 border border-slate-700">
+    <p class="text-xs text-slate-400 uppercase tracking-wider mb-0.5">Archive Size</p>
+    <p class="text-2xl font-bold">{{ total_compressed }}</p>
+  </div>
+  <div class="bg-slate-800 rounded-xl px-6 py-4 border border-slate-700">
+    <p class="text-xs text-slate-400 uppercase tracking-wider mb-0.5">Saved by Compression</p>
+    <p class="text-2xl font-bold text-green-400">{{ total_saved }}</p>
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Backup history table ───────────────────────────────────────────────── -->
+<h2 class="text-lg font-semibold mb-4">Backup History</h2>
+
+{% if backups.is_empty() %}
+  <div class="bg-slate-800 rounded-xl p-8 text-center border border-slate-700">
+    <p class="text-slate-400">No backups yet.</p>
+    <p class="text-sm text-slate-500 mt-2">
+      Run <code class="bg-slate-700 px-1.5 py-0.5 rounded text-green-400">data-fortress backup create</code>
+      to create your first backup.
+    </p>
+  </div>
+{% else %}
+  <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-slate-700 text-slate-400 text-xs uppercase tracking-wider">
+          <th class="text-left px-5 py-3">Label</th>
+          <th class="text-right px-5 py-3 hidden md:table-cell">Original</th>
+          <th class="text-right px-5 py-3 hidden md:table-cell">Compressed</th>
+          <th class="text-right px-5 py-3">Ratio</th>
+          <th class="text-right px-5 py-3 hidden lg:table-cell">Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in backups %}
+        <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors"
+            title="{{ b.archive_path }}">
+          <td class="px-5 py-3">
+            <p class="font-medium text-white">{{ b.label }}</p>
+            <p class="text-xs text-slate-500 truncate max-w-xs font-mono">{{ b.archive_path }}</p>
+          </td>
+          <td class="px-5 py-3 text-right tabular-nums text-slate-300 hidden md:table-cell">{{ b.original }}</td>
+          <td class="px-5 py-3 text-right tabular-nums text-slate-300 hidden md:table-cell">{{ b.compressed }}</td>
+          <td class="px-5 py-3 text-right tabular-nums text-green-400 font-semibold">{{ b.ratio }}</td>
+          <td class="px-5 py-3 text-right tabular-nums text-slate-400 hidden lg:table-cell">{{ b.created_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}
+
+{% endblock %}

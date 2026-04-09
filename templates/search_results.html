@@ -1,0 +1,59 @@
+<!--
+  search_results.html — HTMX partial template
+
+  NOT a full page. Rendered by GET /api/search and swapped into the
+  #results div on the search page by HTMX.
+
+  No extends block — standalone fragment, no base layout.
+-->
+
+{% if results.is_empty() %}
+  {% if query.is_empty() %}
+    <p class="text-slate-500 text-sm">Start typing to search your files.</p>
+  {% else %}
+    <p class="text-slate-400 text-sm">
+      No files found for <strong class="text-white">{{ query }}</strong>.
+    </p>
+  {% endif %}
+{% else %}
+  <!-- Result count summary -->
+  <p class="text-xs text-slate-400 mb-3">
+    {{ count }} result{% if count != 1 %}s{% endif %} for
+    <strong class="text-white">{{ query }}</strong>
+  </p>
+
+  <!-- Results table -->
+  <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-slate-700 text-slate-400 text-xs uppercase tracking-wider">
+          <th class="text-left px-5 py-3">Filename</th>
+          <th class="text-left px-5 py-3 hidden md:table-cell">Category</th>
+          <th class="text-right px-5 py-3">Size</th>
+          <th class="text-right px-5 py-3 hidden lg:table-cell">Modified</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in results %}
+        <!-- Hover reveals the full path as a tooltip via `title` attribute -->
+        <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors"
+            title="{{ r.path }}">
+          <td class="px-5 py-3">
+            <p class="font-medium text-white">{{ r.name }}</p>
+            <p class="text-xs text-slate-500 truncate max-w-xs font-mono">{{ r.path }}</p>
+          </td>
+          <td class="px-5 py-3 hidden md:table-cell">
+            <span class="text-xs bg-slate-700 px-2 py-0.5 rounded capitalize">
+              {{ r.category }}
+            </span>
+          </td>
+          <td class="px-5 py-3 text-right tabular-nums text-slate-300">{{ r.size }}</td>
+          <td class="px-5 py-3 text-right tabular-nums text-slate-400 hidden lg:table-cell">
+            {{ r.modified }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}

@@ -71,8 +71,23 @@ tar = "0.4"
 # ── Serialization ─────────────────────────────────────────────────────────────
 # serde: universal serialization. "derive" = #[derive(Serialize, Deserialize)].
 serde = { version = "1", features = ["derive"] }
-# serde_json: serialize structs to JSON for Streamlit dashboard IPC.
+# serde_json: serialize structs to JSON for CLI output and web API responses.
 serde_json = "1"
+
+# ── Web server ────────────────────────────────────────────────────────────────
+# tokio: async runtime required by Axum. "full" enables all features (timers,
+# fs, net, etc.). Only used when `serve` subcommand is invoked.
+tokio = { version = "1", features = ["full"] }
+# axum: ergonomic async HTTP framework built on hyper and tower.
+axum = "0.7"
+# askama: compile-time Jinja2-style HTML templates. "with-axum" adds an
+# IntoResponse impl so templates can be returned directly from handlers.
+askama = { version = "0.12", features = ["with-axum"] }
+# askama_axum: provides IntoResponse for Askama templates (pulled in by with-axum
+# but must also be listed here so the generated derive code can resolve the crate).
+askama_axum = "0.4"
+# tower-http: middleware for Axum. "fs" enables ServeDir for static files.
+tower-http = { version = "0.5", features = ["fs"] }
 
 # ── Date and time ─────────────────────────────────────────────────────────────
 # chrono: date/time types and formatting. "serde" = ISO 8601 auto-serialization.

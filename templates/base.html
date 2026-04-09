@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en" class="h-full bg-slate-950">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Data Fortress{% endblock %}</title>
+
+  <!--
+    Tailwind CSS — utility classes via CDN play script.
+    No build step required. For production, swap to the compiled CLI output.
+  -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            // Custom accent used for highlights and active nav items.
+            fortress: { DEFAULT: '#22c55e', dark: '#16a34a' }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!--
+    HTMX — gives HTML elements the ability to make HTTP requests and swap
+    portions of the page without writing any JavaScript.
+    Used by the search page: hx-get="/api/search" hx-trigger="keyup changed delay:400ms"
+  -->
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+</head>
+
+<body class="h-full text-slate-100 flex">
+
+  <!-- ── Sidebar navigation ───────────────────────────────────────────────── -->
+  <nav class="w-56 flex-shrink-0 bg-slate-900 border-r border-slate-800
+              flex flex-col py-6 px-4 gap-1">
+
+    <!-- Logo / title -->
+    <div class="mb-6 px-2">
+      <span class="text-xl font-bold tracking-tight">🏰 Data Fortress</span>
+      <p class="text-xs text-slate-400 mt-0.5">Personal File Management</p>
+    </div>
+
+    <!-- Nav links — child templates set the "active" class via block tags. -->
+    <a href="/"           class="nav-link {% block nav_overview %}{% endblock %}">📊 Overview</a>
+    <a href="/duplicates" class="nav-link {% block nav_duplicates %}{% endblock %}">♊ Duplicates</a>
+    <a href="/search"     class="nav-link {% block nav_search %}{% endblock %}">🔍 Search</a>
+    <a href="/backup"     class="nav-link {% block nav_backup %}{% endblock %}">💾 Backup</a>
+
+    <!-- Spacer pushes the footer hint to the bottom -->
+    <div class="flex-1"></div>
+    <p class="text-xs text-slate-500 px-2">Read-only view<br>Use CLI to scan/dedup</p>
+  </nav>
+
+  <!-- ── Main content area ────────────────────────────────────────────────── -->
+  <main class="flex-1 overflow-y-auto">
+    <div class="max-w-6xl mx-auto px-8 py-8">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+
+</body>
+</html>
+
+<style>
+  /*
+   * Base nav-link styles — applied to every sidebar link.
+   * Child templates inject "active" into the class via Askama block tags.
+   */
+  .nav-link {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: rgb(203 213 225);   /* slate-300 */
+    text-decoration: none;
+    transition: background-color 150ms, color 150ms;
+  }
+  .nav-link:hover {
+    background-color: rgb(30 41 59);  /* slate-800 */
+    color: white;
+  }
+  .nav-link.active {
+    background-color: rgb(20 83 45);  /* green-900 */
+    color: rgb(134 239 172);          /* green-300 */
+  }
+</style>

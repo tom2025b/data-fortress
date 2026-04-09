@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Overview — Data Fortress{% endblock %}
+{% block nav_overview %}active{% endblock %}
+
+{% block content %}
+
+<h1 class="text-2xl font-bold mb-1">Overview</h1>
+<p class="text-slate-400 text-sm mb-8">Last scan: {{ last_scan }}</p>
+
+<!-- ── Four metric cards ──────────────────────────────────────────────────── -->
+<div class="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-10">
+
+  <div class="bg-slate-800 rounded-xl p-5 border border-slate-700">
+    <p class="text-xs text-slate-400 uppercase tracking-wider mb-1">Total Files</p>
+    <p class="text-3xl font-bold">{{ total_files }}</p>
+  </div>
+
+  <div class="bg-slate-800 rounded-xl p-5 border border-slate-700">
+    <p class="text-xs text-slate-400 uppercase tracking-wider mb-1">Storage Used</p>
+    <p class="text-3xl font-bold">{{ total_bytes }}</p>
+  </div>
+
+  <div class="bg-slate-800 rounded-xl p-5 border border-slate-700">
+    <p class="text-xs text-slate-400 uppercase tracking-wider mb-1">Duplicate Groups</p>
+    <p class="text-3xl font-bold {% if duplicate_groups > 0 %}text-amber-400{% endif %}">
+      {{ duplicate_groups }}
+    </p>
+  </div>
+
+  <div class="bg-slate-800 rounded-xl p-5 border border-slate-700">
+    <p class="text-xs text-slate-400 uppercase tracking-wider mb-1">Wasted Space</p>
+    <p class="text-3xl font-bold {% if wasted_bytes != "0 B" %}text-red-400{% endif %}">
+      {{ wasted_bytes }}
+    </p>
+  </div>
+
+</div>
+
+<!-- ── Category breakdown ─────────────────────────────────────────────────── -->
+<h2 class="text-lg font-semibold mb-4">Category Breakdown</h2>
+
+{% if categories.is_empty() %}
+  <div class="bg-slate-800 rounded-xl p-8 text-center border border-slate-700">
+    <p class="text-slate-400">No files indexed yet.</p>
+    <p class="text-sm text-slate-500 mt-2">
+      Run: <code class="bg-slate-700 px-2 py-0.5 rounded">data-fortress scan /path/to/files</code>
+    </p>
+  </div>
+{% else %}
+  <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-slate-700 text-slate-400 text-xs uppercase tracking-wider">
+          <th class="text-left px-5 py-3">Category</th>
+          <th class="text-right px-5 py-3">Files</th>
+          <th class="text-right px-5 py-3">Size</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for cat in categories %}
+        <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors">
+          <td class="px-5 py-3 font-medium capitalize">{{ cat.name }}</td>
+          <td class="px-5 py-3 text-right tabular-nums text-slate-300">{{ cat.count }}</td>
+          <td class="px-5 py-3 text-right tabular-nums text-slate-300">{{ cat.bytes }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}
+
+{% endblock %}

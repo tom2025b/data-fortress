@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Search — Data Fortress{% endblock %}
+{% block nav_search %}active{% endblock %}
+
+{% block content %}
+
+<h1 class="text-2xl font-bold mb-1">Search</h1>
+<p class="text-slate-400 text-sm mb-6">Find files by name or path. Results update as you type.</p>
+
+<!-- ── Search controls ───────────────────────────────────────────────────── -->
+<div class="flex gap-3 mb-6">
+
+  <!--
+    hx-get          — endpoint to call
+    hx-trigger      — fire after 400ms of no typing (debounce)
+    hx-target       — CSS selector of the element to update with the response
+    hx-include      — also send the value of the category select
+    hx-indicator    — show a spinner while the request is in flight
+  -->
+  <input
+    type="search"
+    name="q"
+    value="{{ query }}"
+    placeholder="Search filenames and paths…"
+    autocomplete="off"
+    class="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-4 py-2.5
+           text-sm placeholder-slate-500 focus:outline-none focus:border-green-500
+           focus:ring-1 focus:ring-green-500 transition-colors"
+    hx-get="/api/search"
+    hx-trigger="keyup changed delay:400ms, search"
+    hx-target="#results"
+    hx-include="#category-filter"
+    hx-indicator="#spinner"
+  >
+
+  <!-- Category filter — its value is sent alongside the search query via hx-include -->
+  <select
+    id="category-filter"
+    name="category"
+    class="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2.5 text-sm
+           focus:outline-none focus:border-green-500 transition-colors"
+    hx-get="/api/search"
+    hx-trigger="change"
+    hx-target="#results"
+    hx-include="[name='q']"
+  >
+    <option value="">All categories</option>
+    <option value="image">Image</option>
+    <option value="video">Video</option>
+    <option value="audio">Audio</option>
+    <option value="document">Document</option>
+    <option value="archive">Archive</option>
+    <option value="code">Code</option>
+    <option value="other">Other</option>
+  </select>
+
+  <!-- HTMX request-in-flight indicator -->
+  <div id="spinner"
+       class="htmx-indicator flex items-center text-slate-400 text-sm gap-2">
+    <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+      <circle class="opacity-25" cx="12" cy="12" r="10"
+              stroke="currentColor" stroke-width="4"></circle>
+      <path class="opacity-75" fill="currentColor"
+            d="M4 12a8 8 0 018-8v8H4z"></path>
+    </svg>
+    Searching…
+  </div>
+</div>
+
+<!-- ── Results container (HTMX swaps content here) ─────────────────────── -->
+<!--
+  This div starts empty. HTMX replaces its innerHTML with the response from
+  /api/search — which renders search_results.html — every time the input changes.
+-->
+<div id="results">
+  <p class="text-slate-500 text-sm">Start typing to search your files.</p>
+</div>
+
+{% endblock %}

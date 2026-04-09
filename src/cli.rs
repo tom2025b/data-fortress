@@ -96,6 +96,9 @@ pub enum Commands {
 
     /// Show and modify Data Fortress configuration.
     Config(ConfigArgs),
+
+    /// Start the web dashboard (Axum HTTP server).
+    Serve(ServeArgs),
 }
 
 // =============================================================================
@@ -416,6 +419,30 @@ pub enum ConfigAction {
         #[arg(value_name = "VALUE")]
         value: String,
     },
+}
+
+// =============================================================================
+// serve
+// =============================================================================
+
+/// Arguments for the `serve` subcommand.
+///
+/// Example usage:
+///   data-fortress serve
+///   data-fortress serve --port 9090
+///   data-fortress serve --host 0.0.0.0 --port 8080
+#[derive(Args, Debug)]
+pub struct ServeArgs {
+    /// Host address to bind to.
+    ///
+    /// Use "127.0.0.1" (default) for local-only access.
+    /// Use "0.0.0.0" to expose on all network interfaces.
+    #[arg(long = "host", default_value = "127.0.0.1")]
+    pub host: String,
+
+    /// TCP port to listen on.
+    #[arg(long = "port", default_value_t = 8080)]
+    pub port: u16,
 }
 
 // =============================================================================

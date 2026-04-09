@@ -26,6 +26,7 @@ pub mod models;
 pub mod organizer;
 pub mod scanner;
 pub mod search;
+pub mod web;
 
 use std::process;
 
@@ -40,47 +41,46 @@ use cli::{Cli, Commands, BackupAction, ConfigAction};
 // Entry point
 // =============================================================================
 
-fn main() {
-    // Run the real logic in a separate function that returns Result.
-    // This lets us use `?` for error propagation, which we can't do in main()
-    // because main() must return () or a specific Result type.
-    // We handle the error here and exit with a non-zero code.
-    if let Err(e) = run() {
-        // Print the full error chain to stderr.
-        // `{:#}` formats anyhow errors with all context layers separated by ": ".
+// `#[tokio::main]` wraps main() in a Tokio async runtime.
+// This is required because `web::run()` is an async function (Axum needs it).
+// All the existing synchronous commands work unchanged inside an async main —
+// they simply run on the main thread without yielding.
+#[tokio::main]
+async fn main() {
+    if let Err(e) = run().await {
         eprintln!("error: {:#}", e);
         process::exit(1);
     }
 }
 
-/// The real entry point — returns Result so every step can use `?`.
-fn run() -> Result<()> {
-    // Parse CLI arguments. Clap reads from std::env::args() automatically.
-    // If the user passes --help or --version, Clap prints and exits here.
+/// The real entry point — async so the `serve` command can await the server.
+async fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    // Set up structured logging based on the -v/-vv/-vvv verbosity flag.
-    // RUST_LOG environment variable overrides the flag if set.
     init_logging(cli.verbosity);
 
     info!("Data Fortress starting up");
 
-    // Load (or create) the config file.
     let config_path = cli.config_path
         .unwrap_or_else(config::Config::default_config_path);
 
     let config = config::Config::load(&config_path)
         .with_context(|| format!("could not load config from {}", config_path.display()))?;
 
-    // Ensure the database directory and backup directory exist on disk.
     config.ensure_dirs()
         .context("could not create required directories")?;
 
-    // Open (or create) the SQLite database at the configured path.
+    // `serve` opens its own DB connection inside web::run(), so we skip
+    // opening one here for that subcommand — avoids holding a redundant
+    // connection while the server is running.
+    if let Commands::Serve(args) = cli.command {
+        return web::run(&args.host, args.port, &config.db_path).await;
+    }
+
+    // For all other subcommands, open the DB as before.
     let conn = db::open(&config.db_path)
         .with_context(|| format!("could not open database at {}", config.db_path.display()))?;
 
-    // Dispatch to the correct subcommand handler.
     match cli.command {
         Commands::Scan(args)     => cmd_scan(&conn, &config, args, cli.json),
         Commands::Dedup(args)    => cmd_dedup(&conn, args, cli.json),
@@ -88,6 +88,8 @@ fn run() -> Result<()> {
         Commands::Search(args)   => cmd_search(&conn, args, cli.json),
         Commands::Backup(args)   => cmd_backup(&conn, &config, args, cli.json),
         Commands::Config(args)   => cmd_config(&config, &config_path, args, cli.json),
+        // Serve is handled above; this arm is unreachable but required by exhaustiveness.
+        Commands::Serve(_)       => unreachable!(),
     }
 }
 
