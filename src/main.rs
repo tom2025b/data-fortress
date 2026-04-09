@@ -116,7 +116,7 @@ fn cmd_scan(
         .context("scan failed")?;
 
     if json {
-        // Output stats as JSON for the Streamlit dashboard to parse.
+        // Output stats as JSON for scripting or machine consumption.
         println!("{}", serde_json::to_string_pretty(&stats)?);
     } else {
         println!("\nScan complete:");
@@ -403,9 +403,9 @@ fn init_logging(verbosity: u8) {
 //    the full context chain: "could not open database: no such file or directory".
 //
 // 3. WHY logs to stderr, JSON to stdout?
-//    The Streamlit dashboard captures stdout when it shells out to the binary.
-//    If log messages were mixed into stdout, the JSON parser would choke on them.
-//    Separating them (logs → stderr, data → stdout) is the Unix convention.
+//    Scripts and tools that capture stdout to parse JSON would choke if log
+//    messages were mixed in. Separating them (logs → stderr, data → stdout)
+//    is the standard Unix convention for CLI tools.
 //
 // 4. WHY clone the config in cmd_config?
 //    The config is passed as `&config::Config` (shared reference). To modify
