@@ -1,0 +1,465 @@
+# docs/dashboard-architecture.yml
+#
+# Complete reference for the Data Fortress web dashboard.
+# Covers every page, endpoint, HTMX interaction, data structure, and flow.
+#
+# Run the dashboard with:
+#   data-fortress serve [--host 127.0.0.1] [--port 8080]
+#
+# Source files:
+#   src/web/mod.rs          — all Rust: state, handlers, DB helpers, server entry
+#   templates/base.html     — sidebar nav, Tailwind CDN, HTMX CDN
+#   templates/overview.html
+#   templates/duplicates.html
+#   templates/search.html + templates/search_results.html (HTMX partial)
+#   templates/backup.html
+
+# =============================================================================
+# Stack
+# =============================================================================
+stack:
+  web_framework: "Axum 0.7"        # async HTTP routing, built on hyper + tower
+  templates: "Askama 0.12"         # compile-time Jinja2-style templates; typos = build errors
+  htmx: "1.9.12"                   # HTML-first interactivity via CDN; zero build step
+  css: "Tailwind CSS (CDN play)"   # utility classes; no build step needed
+  database: "rusqlite 0.31"        # synchronous SQLite; bundled libsqlite3
+  async_runtime: "Tokio (full)"    # required by Axum; spawn_blocking bridges sync/async
+
+# =============================================================================
+# Shared state (AppState)
+# =============================================================================
+# AppState is cloned into every Axum handler. Arc makes cloning O(1).
+# Defined in src/web/mod.rs.
+
+app_state:
+  db:
+    type: "Arc<Mutex<rusqlite::Connection>>"
+    why: >
+      rusqlite::Connection is Send but not Sync (can't be shared across threads
+      simultaneously). Wrapping in Mutex makes it Sync (only one thread queries
+      at a time). Arc makes it cheaply cloneable across handler tasks.
+    concurrency_note: >
+      Suitable for a single-user personal tool. Under high concurrency, replace
+      with a connection pool (r2d2 or deadpool-sqlite).
+
+  config:
+    type: "Arc<crate::config::Config>"
+    why: >
+      Needed by the backup-create endpoint to know config.backup_dir.
+      Arc avoids deep-copying the full Config struct on every request clone.
+    fields_used:
+      - "config.backup_dir  — where .tar.zst archives are written"
+      - "config.db_path     — used only during server startup in web::run()"
+
+# =============================================================================
+# Server entry point
+# =============================================================================
+server_entry:
+  function: "web::run(host, port, config)"
+  file: "src/web/mod.rs"
+  called_from: "src/main.rs → Commands::Serve branch"
+  steps:
+    1: "Call db::open(&config.db_path) — opens/creates the SQLite file, enables WAL + FK"
+    2: "Wrap connection in Arc<Mutex<Connection>>"
+    3: "Build AppState with db + Arc::new(config.clone())"
+    4: "Call create_router(state) to build the Axum router"
+    5: "Bind TcpListener to host:port"
+    6: "axum::serve() — runs until Ctrl-C"
+
+# =============================================================================
+# Routes
+# =============================================================================
+routes:
+
+  # ── Page routes (GET, return full HTML pages) ─────────────────────────────
+
+  - method: GET
+    path: "/"
+    handler: overview_handler
+    template: templates/overview.html
+    description: "Storage summary — file count, total size, duplicate groups, wasted space, per-category breakdown."
+    db_query: query_overview
+    writes_db: false
+
+  - method: GET
+    path: "/duplicates"
+    handler: duplicates_handler
+    template: templates/duplicates.html
+    description: "All duplicate file groups — expandable cards with KEEP/DELETE badges and per-group delete buttons."
+    db_query: query_duplicates
+    writes_db: false
+
+  - method: GET
+    path: "/search"
+    handler: search_handler
+    template: templates/search.html
+    description: "Search page with debounced HTMX live search and category filter."
+    db_query: none  # page itself has no query; results loaded via /api/search
+    writes_db: false
+
+  - method: GET
+    path: "/backup"
+    handler: backup_handler
+    template: templates/backup.html
+    description: "Backup history list, create-new form, delete-per-row."
+    db_query: query_backups
+    writes_db: false
+
+  # ── Search API (GET, returns HTMX partial) ────────────────────────────────
+
+  - method: GET
+    path: "/api/search"
+    handler: search_api_handler
+    template: templates/search_results.html  # partial — no base layout
+    query_params:
+      q: "Search string (optional; empty returns empty fragment)"
+      category: "File category filter: image|video|audio|document|archive|code|other (optional)"
+    description: >
+      HTMX partial endpoint. Returns an HTML fragment (not a full page).
+      HTMX swaps it into #results on the search page.
+      Returns empty fragment for blank queries to avoid full table scan.
+    db_query: query_search
+    writes_db: false
+
+  # ── Duplicate management (POST, return HTMX fragments) ────────────────────
+
+  - method: POST
+    path: "/api/duplicates/keep-newest"
+    handler: keep_newest_handler
+    form_body:
+      hash: "Full 64-char BLAKE3 hash identifying the duplicate group"
+    description: >
+      Keeps the most recently modified copy in the group; deletes all others
+      from disk; marks deleted files is_present=0 in the database.
+    htmx_swap:
+      target: "closest details"    # the <details> card for this group
+      swap: "outerHTML"            # replaces the entire element
+      on_success: ""               # empty body → element removed from DOM
+      on_error: "<p class='text-red-400'>...</p>"  # error replaces the card
+    db_function: delete_group_keep_newest
+    writes_db: true
+    writes_disk: true
+
+  - method: POST
+    path: "/api/duplicates/keep-newest-all"
+    handler: keep_newest_all_handler
+    form_body: none
+    description: >
+      Applies keep-newest deletion to every current duplicate group.
+      On success, sends HX-Refresh: true header to trigger a full page reload
+      so the summary stats (Groups count, Total Wasted) update correctly.
+    htmx_swap:
+      target: "#groups-container"
+      swap: "innerHTML"
+      on_success: "HX-Refresh: true header → full page reload"
+      on_partial_error: "error card replaces #groups-container"
+    db_function: delete_all_groups_keep_newest
+    writes_db: true
+    writes_disk: true
+
+  # ── Backup management (POST, return HTMX fragments) ───────────────────────
+
+  - method: POST
+    path: "/api/backups/create"
+    handler: create_backup_handler
+    form_body:
+      label: "Human-readable archive name (optional; defaults to backup-YYYY-MM-DD)"
+    description: >
+      Creates a new .tar.zst backup archive of all present files.
+      Runs backup::create() via spawn_blocking (can take minutes for large libraries).
+      Uses hardcoded defaults: all categories, zstd level 3, no dry-run.
+      Returns a success card showing archive path, file count, sizes, and duration.
+    htmx_swap:
+      target: "#create-result"    # div below the create form
+      swap: "innerHTML"
+      on_success: "green success card with archive stats"
+      on_error: "red error card"
+    uses_config: true  # needs config.backup_dir from AppState
+    calls: "crate::backup::create(conn, &config, &args)"
+    writes_db: true   # backup::create inserts a row into the backups table
+    writes_disk: true
+
+  - method: POST
+    path: "/api/backups/delete"
+    handler: delete_backup_handler
+    form_body:
+      id: "SQLite row id (i64) of the backup record to delete"
+    description: >
+      Deletes the .tar.zst archive, its companion .json manifest, and the DB row.
+      File-not-found errors are silently ignored (archive may already be gone).
+    htmx_swap:
+      target: "closest details"    # the <details> card for this backup
+      swap: "outerHTML"
+      on_success: ""               # empty body → card removed from DOM
+      on_error: "<p class='text-red-400'>...</p>"
+    db_function: delete_backup
+    writes_db: true
+    writes_disk: true
+
+  # ── Static assets ─────────────────────────────────────────────────────────
+
+  - method: GET
+    path: "/static/*"
+    handler: "ServeDir (tower_http)"
+    description: "Serves files from ./static/ directory. Graceful 404 if directory missing."
+
+# =============================================================================
+# Template data structures
+# =============================================================================
+# Each Askama template maps to a Rust struct. All structs implement
+# askama::Template + askama_axum::IntoResponse.
+# Defined in src/web/mod.rs.
+
+template_structs:
+
+  OverviewTemplate:
+    template: templates/overview.html
+    fields:
+      total_files:      "u64 — count of present files"
+      total_bytes:      "String — human-readable e.g. '14.2 GiB'"
+      duplicate_groups: "u64 — count of hashes with > 1 present copy"
+      wasted_bytes:     "String — space consumed by duplicate copies"
+      last_scan:        "String — YYYY-MM-DD of most recent scanned_at, or 'Never'"
+      categories:       "Vec<CategoryRow>"
+    nested:
+      CategoryRow:
+        name:  "String — e.g. 'image', 'document'"
+        count: "u64"
+        bytes: "String — human-readable"
+
+  DuplicatesTemplate:
+    template: templates/duplicates.html
+    fields:
+      groups:       "Vec<DupGroupRow>"
+      total_wasted: "String — sum of wasted bytes across all groups"
+      group_count:  "usize"
+    nested:
+      DupGroupRow:
+        hash:         "String — full 64-char BLAKE3 hash (used as API key)"
+        hash_preview: "String — first 12 chars, shown in UI badge"
+        file_count:   "usize — total copies including the keeper"
+        delete_count: "usize — file_count - 1 (pre-computed to avoid template filters)"
+        size_each:    "String — all copies are the same size"
+        wasted:       "String — size_each × delete_count"
+        paths:        "Vec<PathInfo>"
+      PathInfo:
+        path:        "String — absolute filesystem path"
+        modified_at: "String — YYYY-MM-DD"
+        is_newest:   "bool — true = KEEP badge (green), false = DELETE badge (red)"
+
+  SearchTemplate:
+    template: templates/search.html
+    fields:
+      query: "String — current search query (empty on page load)"
+
+  SearchResultsTemplate:
+    template: templates/search_results.html  # HTMX partial
+    fields:
+      results: "Vec<SearchRow>"
+      query:   "String"
+      count:   "usize"
+    nested:
+      SearchRow:
+        name:     "String — filename only"
+        path:     "String — full absolute path"
+        size:     "String — human-readable"
+        category: "String — 'image', 'document', etc."
+        modified: "String — YYYY-MM-DD"
+
+  BackupTemplate:
+    template: templates/backup.html
+    fields:
+      backups:          "Vec<BackupRow>"
+      total_original:   "String — sum of original_bytes across all backups"
+      total_compressed: "String — sum of compressed_bytes"
+      total_saved:      "String — total_original − total_compressed"
+    nested:
+      BackupRow:
+        id:           "i64 — SQLite primary key (sent to delete endpoint)"
+        label:        "String"
+        created_at:   "String — YYYY-MM-DD HH:MM:SS"
+        original:     "String — human-readable"
+        compressed:   "String — human-readable"
+        ratio:        "String — e.g. '42.3%'"
+        archive_path: "String — absolute path to .tar.zst file"
+
+# =============================================================================
+# Form deserialization structs
+# =============================================================================
+# HTMX sends application/x-www-form-urlencoded by default.
+# axum::extract::Form<T> decodes it into these structs.
+
+form_structs:
+
+  SearchQuery:
+    endpoint: "GET /api/search"
+    fields:
+      q:        "Option<String>"
+      category: "Option<String>"
+
+  DeleteGroupForm:
+    endpoint: "POST /api/duplicates/keep-newest"
+    fields:
+      hash: "String — full 64-char BLAKE3 hash"
+
+  BackupCreateForm:
+    endpoint: "POST /api/backups/create"
+    fields:
+      label: "Option<String> — blank is filtered to None, defaulting to 'backup-YYYY-MM-DD'"
+
+  BackupDeleteForm:
+    endpoint: "POST /api/backups/delete"
+    fields:
+      id: "i64 — SQLite row id"
+
+# =============================================================================
+# Database query functions
+# =============================================================================
+# All synchronous — called inside tokio::task::spawn_blocking via run_db().
+# None of the read functions hold the mutex longer than needed.
+
+db_functions:
+
+  query_overview:
+    returns: "rusqlite::Result<OverviewTemplate>"
+    queries:
+      - "COUNT(*) + SUM(size_bytes) from files WHERE is_present=1"
+      - "Duplicate group count + wasted bytes (window function)"
+      - "MAX(scanned_at) for last scan date"
+      - "GROUP BY category for breakdown table"
+
+  query_duplicates:
+    returns: "rusqlite::Result<DuplicatesTemplate>"
+    queries:
+      - "SELECT content_hash, COUNT(*), MAX(size_bytes) — groups with >1 copies, ordered by size DESC"
+      - "For each hash: SELECT path, modified_at ORDER BY modified_at DESC — newest first"
+    notes: >
+      Paths are sorted newest-first so index 0 = keeper (is_newest=true).
+      All other indices get is_newest=false.
+
+  query_search:
+    returns: "rusqlite::Result<Vec<SearchRow>>"
+    params:
+      - "query: &str — LIKE pattern applied to name and path"
+      - "category: Option<&str> — optional WHERE category= filter"
+      - "limit: i64 — max rows (100 from HTMX endpoint)"
+
+  query_backups:
+    returns: "rusqlite::Result<BackupTemplate>"
+    queries:
+      - "SELECT id, label, archive_path, original_bytes, compressed_bytes, algorithm, created_at FROM backups ORDER BY created_at DESC"
+    notes: "Column indices are positional (0=id, 1=label, ..., 6=created_at). algorithm (col 5) is fetched but not displayed."
+
+  delete_group_keep_newest:
+    returns: "rusqlite::Result<(usize, Vec<String>)>"
+    params: "conn, hash: &str"
+    steps:
+      1: "SELECT path FROM files WHERE content_hash=? AND is_present=1 ORDER BY modified_at DESC"
+      2: "Skip paths[0] (newest = keeper)"
+      3: "For each remaining path: std::fs::remove_file → UPDATE files SET is_present=0 WHERE path=?"
+      4: "Collect I/O errors into Vec<String> rather than aborting"
+
+  delete_all_groups_keep_newest:
+    returns: "rusqlite::Result<(usize, Vec<String>)>"
+    steps:
+      1: "SELECT DISTINCT content_hash FROM files WHERE ... GROUP BY content_hash HAVING COUNT(*)>1"
+      2: "Call delete_group_keep_newest for each hash"
+      3: "Accumulate totals and errors"
+
+  delete_backup:
+    returns: "rusqlite::Result<()>"
+    params: "conn, id: i64"
+    steps:
+      1: "SELECT archive_path FROM backups WHERE id=? (uses .optional() for graceful not-found)"
+      2: "std::fs::remove_file(archive_path) — silently ignore errors"
+      3: "Derive manifest path: replace .tar.zst suffix with .json; remove it (silently)"
+      4: "DELETE FROM backups WHERE id=?"
+
+# =============================================================================
+# HTMX interaction patterns
+# =============================================================================
+htmx_patterns:
+
+  live_search:
+    trigger: "keyup changed delay:400ms, search"  # debounce 400ms; also fires on clear-X
+    include: "#category-filter"                   # sends category alongside q=
+    target: "#results"
+    swap: "innerHTML"
+    notes: "Returns empty fragment for blank q to avoid full table scan"
+
+  per_group_delete:
+    trigger: "submit (form)"
+    target: "closest details"
+    swap: "outerHTML"
+    body: "<input type='hidden' name='hash' value='...'>"
+    confirm: "native browser confirm dialog"
+    disabled_elt: "find button"  # prevents double-submit
+
+  delete_all_duplicates:
+    trigger: "submit (form)"
+    target: "#groups-container"
+    swap: "innerHTML"
+    response: "HX-Refresh: true header → browser does full page reload"
+    notes: "Full reload needed so summary stats (Groups, Total Wasted) update"
+
+  backup_create:
+    trigger: "submit (form)"
+    target: "#create-result"
+    swap: "innerHTML"
+    indicator: "#backup-spinner"  # spinner shown while spawn_blocking runs
+    response: "success card or error card"
+
+  per_backup_delete:
+    trigger: "submit (form)"
+    target: "closest details"
+    swap: "outerHTML"
+    body: "<input type='hidden' name='id' value='...'>"
+    confirm: "native browser confirm dialog"
+
+# =============================================================================
+# Key design decisions
+# =============================================================================
+design_decisions:
+
+  - decision: "HTML fragments as API responses (not JSON)"
+    why: >
+      HTMX's model is 'HTML is the API'. The server returns ready-to-render HTML.
+      No client-side JSON parsing, no JavaScript state management.
+
+  - decision: "Empty body = remove element"
+    why: >
+      hx-swap='outerHTML' + empty response replaces the element with nothing,
+      effectively deleting the card from the DOM. No JavaScript needed.
+
+  - decision: "HX-Refresh for stats-affecting deletes"
+    why: >
+      The summary bar (Groups count, Total Wasted) is rendered server-side on
+      page load. After delete-all, those numbers are stale. A full reload is
+      simpler than HTMX out-of-band (OOB) swaps for multiple DOM regions.
+
+  - decision: "spawn_blocking for all DB calls"
+    why: >
+      rusqlite is synchronous. Calling it directly in an async handler blocks
+      the Tokio executor thread, stalling all other async tasks on that thread.
+      spawn_blocking offloads to a dedicated blocking thread pool.
+
+  - decision: "Arc<Config> in AppState instead of just backup_dir"
+    why: >
+      backup::create() takes &Config. Storing the whole config avoids creating
+      a fake partial Config struct. Arc makes the Clone required by AppState O(1).
+
+  - decision: "<details>/<summary> for accordions"
+    why: >
+      Zero JavaScript. The browser manages open/closed state natively. Works
+      even if the CDN fails. CSS can style open vs. closed via details[open].
+
+  - decision: "Collect file I/O errors instead of aborting"
+    why: >
+      A permission error on one file shouldn't prevent all other deletions.
+      Users see all failures at once rather than stopping at the first error.
+
+  - decision: "Pre-compute display values in Rust structs"
+    why: >
+      Askama has limited template filters. Computed values like delete_count
+      (= file_count - 1) or formatted bytes are computed in Rust and stored
+      as String fields, keeping templates simple and type-safe.
