@@ -74,7 +74,9 @@ async fn run() -> Result<()> {
     // opening one here for that subcommand — avoids holding a redundant
     // connection while the server is running.
     if let Commands::Serve(args) = cli.command {
-        return web::run(&args.host, args.port, &config.db_path).await;
+        // Pass the full config so web::run can give the backup-create endpoint
+        // access to config.backup_dir without re-reading the config file.
+        return web::run(&args.host, args.port, &config).await;
     }
 
     // For all other subcommands, open the DB as before.

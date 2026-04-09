@@ -6,8 +6,9 @@
 //!   - HTMX      — live search via HTML attributes, no JS boilerplate
 //!   - Tailwind  — utility CSS via CDN (no build step)
 //!
-//! Architecture rules (matches the Python dashboard's design contract):
-//!   READ-ONLY  — this module never writes to the database.
+//! Architecture rules:
+//!   MOSTLY READ-ONLY — page handlers never write; the /api/duplicates/* and
+//!                      /api/backups/* POST routes do delete/create operations.
 //!   REAL DATA  — all handlers call actual SQL queries; no fake hardcoded values.
 //!   BLOCKING   — rusqlite is synchronous; every DB call is wrapped in
 //!                `spawn_blocking` so it doesn't stall the async executor.
@@ -21,13 +22,14 @@ use std::sync::{Arc, Mutex};
 
 use askama::Template;
 use axum::{
-    extract::{Query, State},
+    extract::{Form, Query, State},
+    http::{header::HeaderName, HeaderMap, HeaderValue},
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use bytesize::ByteSize;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Deserialize;
 use tokio::net::TcpListener;
 use tower_http::services::ServeDir;
@@ -48,6 +50,12 @@ pub struct AppState {
     /// The Mutex serialises access so only one handler queries the DB at a time.
     /// This is acceptable for a single-user personal tool with low concurrency.
     pub db: Arc<Mutex<Connection>>,
+
+    /// The loaded user config — needed by backup create so it knows where to
+    /// write archives (`config.backup_dir`).
+    ///
+    /// Wrapped in Arc so it can be shared across handler tasks cheaply.
+    pub config: Arc<crate::config::Config>,
 }
 
 // =============================================================================
@@ -87,11 +95,26 @@ struct DuplicatesTemplate {
 
 /// One duplicate group (files sharing the same BLAKE3 hash).
 struct DupGroupRow {
-    hash_preview: String,       // First 12 chars of the 64-char hash
+    /// Full 64-char BLAKE3 hash — sent as the API key to the delete endpoints.
+    hash:         String,
+    /// First 12 chars of the hash — shown in the UI badge to save space.
+    hash_preview: String,
     file_count:   usize,
-    size_each:    String,       // All copies are the same size
-    wasted:       String,       // size × (copies − 1)
-    paths:        Vec<String>,  // Absolute paths of every copy
+    /// `file_count - 1` — pre-computed so the template avoids custom filters.
+    delete_count: usize,
+    size_each:    String,          // All copies are the same size
+    wasted:       String,          // size × (copies − 1)
+    paths:        Vec<PathInfo>,   // Paths annotated with keep/delete status
+}
+
+/// One file within a duplicate group, annotated for display.
+///
+/// The "newest" copy (highest `modified_at`) is the file that will be kept
+/// when the user clicks "Keep Newest" — all others are candidates for deletion.
+struct PathInfo {
+    path:        String,  // Absolute filesystem path
+    modified_at: String,  // YYYY-MM-DD — shown next to the path
+    is_newest:   bool,    // true → shows a green KEEP badge; false → red DELETE
 }
 
 /// Search page — query box; results rendered by the HTMX partial below.
@@ -132,6 +155,8 @@ struct BackupTemplate {
 
 /// One row in the backup history table.
 struct BackupRow {
+    /// SQLite primary key — sent to the delete endpoint as a form field.
+    id:           i64,
     label:        String,
     created_at:   String,
     original:     String,
@@ -155,7 +180,13 @@ pub fn create_router(state: AppState) -> Router {
         .route("/search",     get(search_handler))
         .route("/backup",     get(backup_handler))
         // HTMX API — returns HTML fragments, not full pages
-        .route("/api/search", get(search_api_handler))
+        .route("/api/search",                     get(search_api_handler))
+        // Duplicate management — delete files from disk, mark absent in DB.
+        .route("/api/duplicates/keep-newest",     post(keep_newest_handler))
+        .route("/api/duplicates/keep-newest-all", post(keep_newest_all_handler))
+        // Backup management — create archives, delete old ones.
+        .route("/api/backups/create",             post(create_backup_handler))
+        .route("/api/backups/delete",             post(delete_backup_handler))
         // Static assets (CSS overrides, icons, etc.) served from static/
         // Falls back gracefully if the directory doesn't exist yet.
         .nest_service("/static", ServeDir::new("static"))
@@ -230,6 +261,172 @@ async fn backup_handler(State(state): State<AppState>) -> Response {
     }
 }
 
+/// `POST /api/backups/create` — create a new backup archive.
+///
+/// Accepts an optional `label` form field. Runs `backup::create` on the
+/// blocking thread pool (it compresses files and can take a while).
+/// Returns an HTML fragment: a success card on success, an error on failure.
+async fn create_backup_handler(
+    State(state): State<AppState>,
+    Form(form): Form<BackupCreateForm>,
+) -> Response {
+    // Clone what we need to move into the blocking closure.
+    let db     = state.db.clone();
+    let config = Arc::clone(&state.config);
+    let label  = form.label.filter(|l| !l.trim().is_empty());
+
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap_or_else(|p| p.into_inner());
+
+        // Build BackupCreateArgs with defaults — only label is user-supplied.
+        let args = crate::cli::BackupCreateArgs {
+            label,
+            category:          None,  // back up all categories
+            compression_level: 3,     // zstd level 3 — speed/ratio balance
+            dry_run:           false,
+        };
+
+        crate::backup::create(&conn, &config, &args)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(report)) => {
+            // Show the archive path and stats so the user knows it worked.
+            let saved = report.original_bytes.saturating_sub(report.compressed_bytes);
+            Html(format!(
+                r#"<div class="bg-green-900/30 border border-green-700 rounded-xl p-5">
+                     <p class="text-green-400 font-semibold mb-1">✓ Backup created</p>
+                     <p class="text-sm text-slate-300 font-mono break-all">{}</p>
+                     <p class="text-xs text-slate-400 mt-2">
+                       {} files &middot; {} → {} &middot; {} saved &middot; {}ms
+                     </p>
+                     <p class="text-xs text-slate-500 mt-2">Reload the page to see it in the list.</p>
+                   </div>"#,
+                report.archive_path.display(),
+                report.files_included,
+                fmt_bytes(report.original_bytes),
+                fmt_bytes(report.compressed_bytes),
+                fmt_bytes(saved),
+                report.duration_ms,
+            ))
+            .into_response()
+        }
+        Ok(Err(e)) => Html(format!(
+            r#"<div class="bg-red-900/30 border border-red-700 rounded-xl p-5">
+                 <p class="text-red-400 font-semibold">Backup failed</p>
+                 <p class="text-sm text-slate-400 mt-1">{e:#}</p>
+               </div>"#
+        ))
+        .into_response(),
+        Err(e) => Html(format!(
+            r#"<p class="text-red-400 text-sm p-4">Task error: {e}</p>"#
+        ))
+        .into_response(),
+    }
+}
+
+/// `POST /api/backups/delete` — delete one backup archive and its DB record.
+///
+/// Removes the .tar.zst archive, the companion .json manifest (if present),
+/// and the row from the `backups` table.
+/// Returns an empty body on success (HTMX removes the row) or an error fragment.
+async fn delete_backup_handler(
+    State(state): State<AppState>,
+    Form(form): Form<BackupDeleteForm>,
+) -> Response {
+    let id = form.id;
+    match run_db(state.db, move |conn| delete_backup(conn, id)).await {
+        Ok(()) => Html("").into_response(),
+        Err(msg) => Html(format!(
+            r#"<p class="text-red-400 text-sm p-3">Delete failed: {msg}</p>"#
+        ))
+        .into_response(),
+    }
+}
+
+/// `POST /api/duplicates/keep-newest` — delete all but the newest copy in one group.
+///
+/// Receives a form field `hash=<64-char-blake3>` sent by HTMX.
+/// On success, returns an empty body — HTMX swaps the group's `<details>` with
+/// nothing (`hx-swap="outerHTML"`), which removes the card from the DOM.
+/// On failure, returns a small error fragment that replaces the card instead.
+async fn keep_newest_handler(
+    State(state): State<AppState>,
+    Form(form): Form<DeleteGroupForm>,
+) -> Response {
+    // Move the hash into the closure so it is owned (required by spawn_blocking).
+    let hash = form.hash;
+    match run_db(state.db, move |conn| delete_group_keep_newest(conn, &hash)).await {
+        Ok((_deleted, errors)) if errors.is_empty() => {
+            // Empty body → HTMX removes the group card from the DOM entirely.
+            Html("").into_response()
+        }
+        Ok((deleted, errors)) => {
+            // Partial success: some files were deleted but others failed.
+            // Return an error fragment so the card stays visible with the problem.
+            Html(format!(
+                r#"<p class="text-amber-400 text-sm p-4">
+                     Deleted {deleted} file(s), but some errors occurred:<br>
+                     <span class="font-mono text-xs">{}</span>
+                   </p>"#,
+                errors.join("<br>")
+            ))
+            .into_response()
+        }
+        Err(msg) => Html(format!(
+            r#"<p class="text-red-400 text-sm p-4">Error: {msg}</p>"#
+        ))
+        .into_response(),
+    }
+}
+
+/// `POST /api/duplicates/keep-newest-all` — apply keep-newest to every group at once.
+///
+/// No request body needed — this acts on all current duplicate groups.
+/// On success, sends the HTMX `HX-Refresh: true` header, which tells the
+/// browser to do a full page reload so the summary bar updates correctly.
+async fn keep_newest_all_handler(State(state): State<AppState>) -> Response {
+    match run_db(state.db, delete_all_groups_keep_newest).await {
+        Ok((_deleted, errors)) if errors.is_empty() => {
+            // HX-Refresh causes HTMX to reload the full page after the response.
+            // This is cleaner than trying to OOB-update multiple DOM regions.
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                HeaderName::from_static("hx-refresh"),
+                HeaderValue::from_static("true"),
+            );
+            (headers, Html("")).into_response()
+        }
+        Ok((deleted, errors)) => {
+            // Some deletions failed — still refresh, but warn in the fragment.
+            // We can't show the warning AND refresh, so we skip the refresh
+            // and show the error inside the groups container instead.
+            Html(format!(
+                r#"<div class="bg-amber-900/30 border border-amber-700 rounded-xl p-6">
+                     <p class="text-amber-400 font-semibold mb-2">
+                       Deleted {deleted} file(s), but some errors occurred:
+                     </p>
+                     <ul class="text-xs font-mono text-amber-300 space-y-1">
+                       {}
+                     </ul>
+                     <p class="text-slate-400 text-sm mt-3">Reload the page to see the updated list.</p>
+                   </div>"#,
+                errors
+                    .iter()
+                    .map(|e| format!("<li>{e}</li>"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ))
+            .into_response()
+        }
+        Err(msg) => Html(format!(
+            r#"<p class="text-red-400 text-sm p-4">Error: {msg}</p>"#
+        ))
+        .into_response(),
+    }
+}
+
 // =============================================================================
 // Query parameters
 // =============================================================================
@@ -239,6 +436,33 @@ async fn backup_handler(State(state): State<AppState>) -> Response {
 struct SearchQuery {
     q:        Option<String>,
     category: Option<String>,
+}
+
+/// Deserialized from the `POST /api/duplicates/keep-newest` form body.
+///
+/// HTMX sends form data as `application/x-www-form-urlencoded` by default,
+/// which `axum::extract::Form` decodes into this struct automatically.
+#[derive(Deserialize)]
+struct DeleteGroupForm {
+    /// The full 64-char BLAKE3 hash that uniquely identifies the duplicate group.
+    hash: String,
+}
+
+/// Form body for `POST /api/backups/create`.
+///
+/// Only `label` is user-supplied from the web form. All other backup options
+/// use sensible defaults (compression level 3, all categories, no dry-run).
+#[derive(Deserialize)]
+struct BackupCreateForm {
+    /// Human-readable archive label. Defaults to "backup-YYYY-MM-DD" if blank.
+    label: Option<String>,
+}
+
+/// Form body for `POST /api/backups/delete`.
+#[derive(Deserialize)]
+struct BackupDeleteForm {
+    /// The SQLite row ID of the backup record to remove.
+    id: i64,
 }
 
 // =============================================================================
@@ -345,22 +569,39 @@ fn query_duplicates(conn: &Connection) -> rusqlite::Result<DuplicatesTemplate> {
     let mut total_wasted_bytes: u64 = 0;
 
     for (hash, copies, size_bytes) in hash_rows {
-        // For each hash, fetch all the file paths.
+        // Fetch paths with modified_at, sorted newest-first.
+        // Index 0 will be the file we keep on "Keep Newest" — we annotate it.
         let mut path_stmt = conn.prepare(
-            "SELECT path FROM files
+            "SELECT path, modified_at FROM files
              WHERE content_hash = ?1 AND is_present = 1
-             ORDER BY path",
+             ORDER BY modified_at DESC, path ASC",
         )?;
-        let paths: Vec<String> = path_stmt
-            .query_map([&hash], |row| row.get(0))?
+        let raw: Vec<(String, String)> = path_stmt
+            .query_map([&hash], |row| Ok((row.get(0)?, row.get(1)?)))?
             .filter_map(|r| r.ok())
+            .collect();
+
+        // Annotate each path: the first (newest) gets is_newest=true, rest false.
+        let paths: Vec<PathInfo> = raw
+            .into_iter()
+            .enumerate()
+            .map(|(i, (path, modified_at))| PathInfo {
+                // Truncate the ISO 8601 timestamp to just the date for display.
+                modified_at: modified_at.chars().take(10).collect(),
+                is_newest:   i == 0,
+                path,
+            })
             .collect();
 
         let wasted = size_bytes * (copies as u64 - 1);
         total_wasted_bytes += wasted;
 
+        // Borrow hash before moving it into the struct.
+        let hash_preview = hash[..12.min(hash.len())].to_string();
         groups.push(DupGroupRow {
-            hash_preview: hash[..12].to_string(),
+            hash,
+            hash_preview,
+            delete_count: copies.saturating_sub(1),
             file_count:   copies,
             size_each:    fmt_bytes(size_bytes),
             wasted:       fmt_bytes(wasted),
@@ -434,8 +675,11 @@ fn map_search_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SearchRow> {
 
 /// Query all backups for the backup history page.
 fn query_backups(conn: &Connection) -> rusqlite::Result<BackupTemplate> {
+    // Select all columns (including id and algorithm) so we have the row id
+    // for the delete button. Column order: id(0), label(1), archive_path(2),
+    // original_bytes(3), compressed_bytes(4), algorithm(5), created_at(6).
     let mut stmt = conn.prepare(
-        "SELECT label, archive_path, original_bytes, compressed_bytes, created_at
+        "SELECT id, label, archive_path, original_bytes, compressed_bytes, algorithm, created_at
          FROM backups ORDER BY created_at DESC",
     )?;
 
@@ -447,16 +691,17 @@ fn query_backups(conn: &Connection) -> rusqlite::Result<BackupTemplate> {
     let mut backups: Vec<BackupRow> = Vec::new();
     for row in stmt
         .query_map([], |row| {
-            let label:        String = row.get(0)?;
-            let archive_path: String = row.get(1)?;
-            let orig:         i64    = row.get(2)?;
-            let comp:         i64    = row.get(3)?;
-            let created_at:   String = row.get(4)?;
-            Ok((label, archive_path, orig as u64, comp as u64, created_at))
+            let id:           i64    = row.get(0)?;
+            let label:        String = row.get(1)?;
+            let archive_path: String = row.get(2)?;
+            let orig:         i64    = row.get(3)?;
+            let comp:         i64    = row.get(4)?;
+            let created_at:   String = row.get(6)?;  // col 5 = algorithm
+            Ok((id, label, archive_path, orig as u64, comp as u64, created_at))
         })?
         .filter_map(|r| r.ok())
     {
-        let (label, archive_path, orig, comp, created_at) = row;
+        let (id, label, archive_path, orig, comp, created_at) = row;
         total_original   += orig;
         total_compressed += comp;
 
@@ -467,6 +712,7 @@ fn query_backups(conn: &Connection) -> rusqlite::Result<BackupTemplate> {
         };
 
         backups.push(BackupRow {
+            id,
             label,
             created_at: created_at.chars().take(19).collect(),
             original:   fmt_bytes(orig),
@@ -484,6 +730,134 @@ fn query_backups(conn: &Connection) -> rusqlite::Result<BackupTemplate> {
         total_compressed: fmt_bytes(total_compressed),
         total_saved:      fmt_bytes(saved),
     })
+}
+
+// =============================================================================
+// Duplicate deletion helpers (synchronous — called inside spawn_blocking)
+// =============================================================================
+// These are the only functions in this module that mutate the database or
+// touch the filesystem. Everything else is read-only.
+
+/// Keep the newest copy of a duplicate group and delete all others.
+///
+/// Steps:
+///   1. Query all `(path, modified_at)` rows for `hash`, sorted newest-first.
+///   2. The first row is the keeper; all others are deleted from disk.
+///   3. Each successfully deleted file is marked `is_present = 0` in the DB.
+///
+/// File-system errors are collected into the returned `Vec<String>` rather than
+/// aborting — one permission error shouldn't prevent the other deletions.
+fn delete_group_keep_newest(
+    conn: &Connection,
+    hash: &str,
+) -> rusqlite::Result<(usize, Vec<String>)> {
+    // Fetch all paths for the group, newest first.
+    let mut stmt = conn.prepare(
+        "SELECT path FROM files
+         WHERE content_hash = ?1 AND is_present = 1
+         ORDER BY modified_at DESC, path ASC",
+    )?;
+    let paths: Vec<String> = stmt
+        .query_map([hash], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    // Nothing to do if the group has fewer than 2 present files.
+    if paths.len() < 2 {
+        return Ok((0, vec![]));
+    }
+
+    // `paths[0]` is the newest — skip it; delete all the rest.
+    let mut deleted = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+
+    for path in &paths[1..] {
+        match std::fs::remove_file(path) {
+            Ok(()) => {
+                // Mark the row absent so the dashboard stops counting it.
+                // Ignore the rusqlite error here — the file is already gone,
+                // so propagating the DB error would be misleading.
+                let _ = conn.execute(
+                    "UPDATE files SET is_present = 0 WHERE path = ?1",
+                    [path.as_str()],
+                );
+                deleted += 1;
+            }
+            Err(e) => {
+                // Record the error but continue deleting the other files.
+                errors.push(format!("{path}: {e}"));
+            }
+        }
+    }
+
+    Ok((deleted, errors))
+}
+
+/// Apply `delete_group_keep_newest` to every current duplicate group.
+///
+/// Fetches the list of duplicate hashes from the database, then calls the
+/// per-group helper for each one. Errors across all groups are accumulated
+/// so the caller gets a complete picture of what failed.
+fn delete_all_groups_keep_newest(
+    conn: &Connection,
+) -> rusqlite::Result<(usize, Vec<String>)> {
+    // Find all hashes that appear more than once among present files.
+    let mut stmt = conn.prepare(
+        "SELECT content_hash FROM files
+         WHERE content_hash IS NOT NULL AND is_present = 1
+         GROUP BY content_hash
+         HAVING COUNT(*) > 1",
+    )?;
+    let hashes: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut total_deleted = 0usize;
+    let mut all_errors:    Vec<String> = Vec::new();
+
+    for hash in hashes {
+        // Re-use the single-group helper; propagate any rusqlite::Error up.
+        let (n, errs) = delete_group_keep_newest(conn, &hash)?;
+        total_deleted += n;
+        all_errors.extend(errs);
+    }
+
+    Ok((total_deleted, all_errors))
+}
+
+/// Delete a backup record by its SQLite row id.
+///
+/// Removes, in order:
+///   1. The .tar.zst archive file (if it still exists on disk).
+///   2. The companion .json manifest (same base path, .json extension).
+///   3. The row from the `backups` table.
+///
+/// File-not-found errors are silently ignored — the archive may have already
+/// been deleted manually. Other I/O errors are also ignored (we still remove
+/// the DB record so the dashboard stays clean).
+fn delete_backup(conn: &Connection, id: i64) -> rusqlite::Result<()> {
+    // Fetch the archive path for this backup so we can delete the file.
+    let archive_path: Option<String> = conn.query_row(
+        "SELECT archive_path FROM backups WHERE id = ?1",
+        [id],
+        |row| row.get(0),
+    )
+    .optional()?;
+
+    if let Some(path) = archive_path {
+        // Delete the compressed archive (ignore any I/O error).
+        let _ = std::fs::remove_file(&path);
+
+        // Derive the manifest path: "backup-label-uuid.tar.zst" →
+        // "backup-label-uuid.json" by replacing the double extension.
+        let manifest = path.trim_end_matches(".tar.zst").to_string() + ".json";
+        let _ = std::fs::remove_file(&manifest);
+    }
+
+    // Remove the DB record regardless of whether the file existed.
+    conn.execute("DELETE FROM backups WHERE id = ?1", [id])?;
+    Ok(())
 }
 
 // =============================================================================
@@ -585,21 +959,20 @@ fn error_fragment(msg: &str) -> Response {
 
 /// Start the Axum HTTP server on the given host and port.
 ///
-/// Opens the database at `db_path` (creating it if missing), wraps it in
-/// `Arc<Mutex<_>>`, builds the router, and starts listening.
+/// Accepts the full user `Config` so the backup-create endpoint can write
+/// archives to `config.backup_dir` without re-reading the config file.
 ///
 /// This function is `async` and blocks until the server is shut down (Ctrl-C).
-pub async fn run(host: &str, port: u16, db_path: &std::path::Path) -> anyhow::Result<()> {
+pub async fn run(host: &str, port: u16, config: &crate::config::Config) -> anyhow::Result<()> {
     use anyhow::Context;
 
-    // Open the SQLite connection. WAL mode and FK enforcement are set by db::open,
-    // but we call Connection::open directly here so the web server can start
-    // without duplicating the full init_schema logic on an already-initialised DB.
-    let conn = crate::db::open(db_path)
-        .with_context(|| format!("could not open database at {}", db_path.display()))?;
+    // Open the SQLite connection. WAL mode and FK enforcement are set by db::open.
+    let conn = crate::db::open(&config.db_path)
+        .with_context(|| format!("could not open database at {}", config.db_path.display()))?;
 
     let state = AppState {
-        db: Arc::new(Mutex::new(conn)),
+        db:     Arc::new(Mutex::new(conn)),
+        config: Arc::new(config.clone()),
     };
 
     let app = create_router(state);

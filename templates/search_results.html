@@ -2,58 +2,107 @@
   search_results.html — HTMX partial template
 
   NOT a full page. Rendered by GET /api/search and swapped into the
-  #results div on the search page by HTMX.
+  #results div on the search page by HTMX. No extends block needed.
 
-  No extends block — standalone fragment, no base layout.
+  Each result is a <details>/<summary> card so you can expand any row
+  to see the full path and copy it — without any JavaScript.
 -->
 
 {% if results.is_empty() %}
+
   {% if query.is_empty() %}
-    <p class="text-slate-500 text-sm">Start typing to search your files.</p>
+  <p class="text-slate-500 text-sm">Start typing to search your files.</p>
   {% else %}
-    <p class="text-slate-400 text-sm">
-      No files found for <strong class="text-white">{{ query }}</strong>.
-    </p>
+  <p class="text-slate-400 text-sm">
+    No files found for <strong class="text-white">{{ query }}</strong>.
+  </p>
   {% endif %}
+
 {% else %}
-  <!-- Result count summary -->
+
+  <!-- Result count + query echo -->
   <p class="text-xs text-slate-400 mb-3">
     {{ count }} result{% if count != 1 %}s{% endif %} for
     <strong class="text-white">{{ query }}</strong>
   </p>
 
-  <!-- Results table -->
-  <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-    <table class="w-full text-sm">
-      <thead>
-        <tr class="border-b border-slate-700 text-slate-400 text-xs uppercase tracking-wider">
-          <th class="text-left px-5 py-3">Filename</th>
-          <th class="text-left px-5 py-3 hidden md:table-cell">Category</th>
-          <th class="text-right px-5 py-3">Size</th>
-          <th class="text-right px-5 py-3 hidden lg:table-cell">Modified</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for r in results %}
-        <!-- Hover reveals the full path as a tooltip via `title` attribute -->
-        <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors"
-            title="{{ r.path }}">
-          <td class="px-5 py-3">
-            <p class="font-medium text-white">{{ r.name }}</p>
-            <p class="text-xs text-slate-500 truncate max-w-xs font-mono">{{ r.path }}</p>
-          </td>
-          <td class="px-5 py-3 hidden md:table-cell">
-            <span class="text-xs bg-slate-700 px-2 py-0.5 rounded capitalize">
-              {{ r.category }}
-            </span>
-          </td>
-          <td class="px-5 py-3 text-right tabular-nums text-slate-300">{{ r.size }}</td>
-          <td class="px-5 py-3 text-right tabular-nums text-slate-400 hidden lg:table-cell">
-            {{ r.modified }}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <!-- Card list — one <details> per result -->
+  <div class="space-y-2">
+    {% for r in results %}
+    <!--
+      <details>/<summary> gives expand/collapse with zero JavaScript.
+      The browser stores the open/closed state per element automatically.
+    -->
+    <details class="bg-slate-800 rounded-xl border border-slate-700 group">
+
+      <!-- ── Collapsed summary row ── -->
+      <summary class="flex items-center justify-between px-5 py-3 cursor-pointer
+                      select-none hover:bg-slate-700/40 rounded-xl transition-colors
+                      list-none">
+
+        <div class="flex items-center gap-3 min-w-0">
+          <!-- Category colour dot -->
+          <span class="flex-shrink-0 w-2 h-2 rounded-full
+            {% if r.category == "image" %}bg-purple-400
+            {% else if r.category == "video" %}bg-pink-400
+            {% else if r.category == "audio" %}bg-yellow-400
+            {% else if r.category == "document" %}bg-blue-400
+            {% else if r.category == "archive" %}bg-orange-400
+            {% else if r.category == "code" %}bg-green-400
+            {% else %}bg-slate-400{% endif %}">
+          </span>
+
+          <!-- Filename + truncated path -->
+          <div class="min-w-0">
+            <p class="font-medium text-white text-sm truncate">{{ r.name }}</p>
+            <p class="text-xs text-slate-500 font-mono truncate max-w-sm">{{ r.path }}</p>
+          </div>
+        </div>
+
+        <!-- Right side: size + modified -->
+        <div class="flex-shrink-0 flex items-center gap-4 ml-4 text-right">
+          <span class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded capitalize hidden sm:inline">
+            {{ r.category }}
+          </span>
+          <span class="text-sm tabular-nums text-slate-300">{{ r.size }}</span>
+          <span class="text-xs tabular-nums text-slate-500 hidden lg:inline">{{ r.modified }}</span>
+        </div>
+      </summary>
+
+      <!-- ── Expanded detail panel ── -->
+      <div class="px-5 pb-4 pt-3 border-t border-slate-700/50">
+        <dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
+
+          <!-- Full path — selectable so users can copy it -->
+          <dt class="text-slate-500 font-medium whitespace-nowrap">Full path</dt>
+          <dd>
+            <code class="text-slate-200 font-mono text-xs break-all select-all leading-relaxed">{{ r.path }}</code>
+          </dd>
+
+          <dt class="text-slate-500 font-medium">Category</dt>
+          <dd class="capitalize text-slate-300">{{ r.category }}</dd>
+
+          <dt class="text-slate-500 font-medium">Size</dt>
+          <dd class="text-slate-300 tabular-nums">{{ r.size }}</dd>
+
+          <dt class="text-slate-500 font-medium">Modified</dt>
+          <dd class="text-slate-300 tabular-nums">{{ r.modified }}</dd>
+
+        </dl>
+
+        <!-- Copy-path hint — clicking the code block above selects all text.
+             One line of JS is unavoidable for clipboard access. -->
+        <p class="text-xs text-slate-600 mt-3">
+          Tip: click the path above to select it, then
+          <button class="text-slate-500 hover:text-slate-300 underline transition-colors"
+                  onclick="navigator.clipboard.writeText('{{ r.path }}').then(()=>this.textContent='copied!').catch(()=>{})">
+            copy to clipboard
+          </button>
+        </p>
+      </div>
+
+    </details>
+    {% endfor %}
   </div>
+
 {% endif %}

@@ -5,23 +5,88 @@
 {% block content %}
 
 <h1 class="text-2xl font-bold mb-1">Backup</h1>
-<p class="text-slate-400 text-sm mb-6">
-  Versioned TAR+zstd archives. Create new backups from the CLI:
+<p class="text-slate-400 text-sm mb-8">
+  Versioned TAR+zstd archives of your scanned files.
+  Create a backup below, or run the CLI for advanced options.
 </p>
 
-<!-- CLI quick-reference card -->
-<div class="bg-slate-900 border border-slate-700 rounded-lg p-4 mb-8 font-mono text-sm">
-  <p class="text-slate-400 text-xs mb-2 uppercase tracking-wider">Quick commands</p>
-  <p><span class="text-slate-500">$</span> <span class="text-green-400">data-fortress backup create</span> <span class="text-slate-300">--label "before-cleanup"</span></p>
-  <p><span class="text-slate-500">$</span> <span class="text-green-400">data-fortress backup create</span> <span class="text-slate-300">--category document --compression 9</span></p>
-  <p><span class="text-slate-500">$</span> <span class="text-green-400">data-fortress backup list</span></p>
+<!-- ── Create new backup ──────────────────────────────────────────────────── -->
+<div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
+  <h2 class="text-base font-semibold mb-1">New Backup</h2>
+  <p class="text-xs text-slate-400 mb-4">
+    Archives all present files into a compressed .tar.zst archive. Leave the
+    label blank to use today's date. This may take a while for large libraries.
+  </p>
+
+  <!--
+    hx-post   — sends form data to the create endpoint.
+    hx-target — replace the #create-result div with the response fragment.
+    hx-swap   — innerHTML so the result card appears below.
+    hx-disabled-elt="find button" — disables the button while the request runs
+                                     (backup can take several minutes).
+    hx-indicator — show a spinner while in-flight.
+  -->
+  <form
+    hx-post="/api/backups/create"
+    hx-target="#create-result"
+    hx-swap="innerHTML"
+    hx-disabled-elt="find button"
+    hx-indicator="#backup-spinner"
+    class="flex flex-wrap gap-3 items-end">
+
+    <div class="flex-1 min-w-48">
+      <label for="backup-label" class="block text-xs text-slate-400 mb-1.5">
+        Label <span class="text-slate-600">(optional)</span>
+      </label>
+      <input
+        id="backup-label"
+        type="text"
+        name="label"
+        placeholder="e.g. weekly, before-cleanup…"
+        autocomplete="off"
+        class="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5
+               text-sm placeholder-slate-600 focus:outline-none focus:border-green-500
+               focus:ring-1 focus:ring-green-500 transition-colors">
+    </div>
+
+    <button type="submit"
+            class="flex items-center gap-2 bg-green-600 hover:bg-green-700
+                   text-white text-sm font-semibold px-5 py-2.5 rounded-lg
+                   transition-colors focus:outline-none focus:ring-2 focus:ring-green-500
+                   disabled:opacity-50 disabled:cursor-not-allowed">
+      <!-- Archive icon -->
+      <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M4 3a2 2 0 100 4h12a2 2 0 100-4H4z"/>
+        <path fill-rule="evenodd"
+              d="M3 8h14v7a2 2 0 01-2 2H5a2 2 0 01-2-2V8zm5 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z"
+              clip-rule="evenodd"/>
+      </svg>
+      Create Backup
+    </button>
+
+    <!-- HTMX in-flight spinner — hidden by default, shown by .htmx-request class -->
+    <div id="backup-spinner"
+         class="htmx-indicator flex items-center gap-2 text-slate-400 text-sm">
+      <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10"
+                stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor"
+              d="M4 12a8 8 0 018-8v8H4z"></path>
+      </svg>
+      Creating backup…
+    </div>
+
+  </form>
+
+  <!-- HTMX swaps success/error card here after the request completes -->
+  <div id="create-result" class="mt-4"></div>
 </div>
 
-<!-- ── Totals row ─────────────────────────────────────────────────────────── -->
+<!-- ── Summary stats (only when there are backups) ────────────────────────── -->
 {% if !backups.is_empty() %}
-<div class="flex gap-4 mb-8">
+<div class="flex flex-wrap gap-4 mb-8">
   <div class="bg-slate-800 rounded-xl px-6 py-4 border border-slate-700">
-    <p class="text-xs text-slate-400 uppercase tracking-wider mb-0.5">Data Backed Up</p>
+    <p class="text-xs text-slate-400 uppercase tracking-wider mb-0.5">Total Backed Up</p>
     <p class="text-2xl font-bold">{{ total_original }}</p>
   </div>
   <div class="bg-slate-800 rounded-xl px-6 py-4 border border-slate-700">
@@ -35,46 +100,126 @@
 </div>
 {% endif %}
 
-<!-- ── Backup history table ───────────────────────────────────────────────── -->
+<!-- ── Backup history ─────────────────────────────────────────────────────── -->
 <h2 class="text-lg font-semibold mb-4">Backup History</h2>
 
 {% if backups.is_empty() %}
-  <div class="bg-slate-800 rounded-xl p-8 text-center border border-slate-700">
-    <p class="text-slate-400">No backups yet.</p>
-    <p class="text-sm text-slate-500 mt-2">
-      Run <code class="bg-slate-700 px-1.5 py-0.5 rounded text-green-400">data-fortress backup create</code>
-      to create your first backup.
-    </p>
-  </div>
+<div class="bg-slate-800 rounded-xl p-8 text-center border border-slate-700">
+  <p class="text-slate-400">No backups yet.</p>
+  <p class="text-sm text-slate-500 mt-2">Create your first backup with the form above.</p>
+</div>
+
 {% else %}
-  <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-    <table class="w-full text-sm">
-      <thead>
-        <tr class="border-b border-slate-700 text-slate-400 text-xs uppercase tracking-wider">
-          <th class="text-left px-5 py-3">Label</th>
-          <th class="text-right px-5 py-3 hidden md:table-cell">Original</th>
-          <th class="text-right px-5 py-3 hidden md:table-cell">Compressed</th>
-          <th class="text-right px-5 py-3">Ratio</th>
-          <th class="text-right px-5 py-3 hidden lg:table-cell">Created</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for b in backups %}
-        <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors"
-            title="{{ b.archive_path }}">
-          <td class="px-5 py-3">
-            <p class="font-medium text-white">{{ b.label }}</p>
-            <p class="text-xs text-slate-500 truncate max-w-xs font-mono">{{ b.archive_path }}</p>
-          </td>
-          <td class="px-5 py-3 text-right tabular-nums text-slate-300 hidden md:table-cell">{{ b.original }}</td>
-          <td class="px-5 py-3 text-right tabular-nums text-slate-300 hidden md:table-cell">{{ b.compressed }}</td>
-          <td class="px-5 py-3 text-right tabular-nums text-green-400 font-semibold">{{ b.ratio }}</td>
-          <td class="px-5 py-3 text-right tabular-nums text-slate-400 hidden lg:table-cell">{{ b.created_at }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+<div id="backup-list" class="space-y-3">
+  {% for b in backups %}
+  <!--
+    Each backup is a <details> accordion.
+    The expanded panel shows the archive path and a delete button.
+
+    hx-target="closest details" + hx-swap="outerHTML" on the delete form
+    removes this card from the DOM on success.
+  -->
+  <details class="bg-slate-800 rounded-xl border border-slate-700">
+
+    <!-- ── Collapsed summary ── -->
+    <summary class="flex items-center justify-between px-5 py-4 cursor-pointer
+                    select-none hover:bg-slate-700/40 rounded-xl transition-colors
+                    list-none">
+      <div class="flex items-center gap-4">
+        <!-- Backup icon -->
+        <svg xmlns="http://www.w3.org/2000/svg"
+             class="w-5 h-5 text-slate-400 flex-shrink-0"
+             viewBox="0 0 20 20" fill="currentColor">
+          <path d="M4 3a2 2 0 100 4h12a2 2 0 100-4H4z"/>
+          <path fill-rule="evenodd"
+                d="M3 8h14v7a2 2 0 01-2 2H5a2 2 0 01-2-2V8zm5 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z"
+                clip-rule="evenodd"/>
+        </svg>
+        <div>
+          <p class="font-medium text-white">{{ b.label }}</p>
+          <p class="text-xs text-slate-500">{{ b.created_at }}</p>
+        </div>
+      </div>
+
+      <!-- Size stats always visible in the summary row -->
+      <div class="flex items-center gap-6 text-right flex-shrink-0">
+        <div class="hidden md:block">
+          <p class="text-xs text-slate-500 mb-0.5">Original</p>
+          <p class="text-sm tabular-nums text-slate-300">{{ b.original }}</p>
+        </div>
+        <div class="hidden md:block">
+          <p class="text-xs text-slate-500 mb-0.5">Compressed</p>
+          <p class="text-sm tabular-nums text-slate-300">{{ b.compressed }}</p>
+        </div>
+        <div>
+          <p class="text-xs text-slate-500 mb-0.5">Ratio</p>
+          <p class="text-sm tabular-nums text-green-400 font-semibold">{{ b.ratio }}</p>
+        </div>
+      </div>
+    </summary>
+
+    <!-- ── Expanded details ── -->
+    <div class="px-5 pb-5 pt-3 border-t border-slate-700/50 space-y-4">
+
+      <!-- Archive path — select-all so it's easy to copy -->
+      <div>
+        <p class="text-xs text-slate-500 mb-1">Archive path</p>
+        <code class="text-xs font-mono text-slate-300 break-all select-all
+                     bg-slate-900 px-3 py-2 rounded-lg block leading-relaxed">{{ b.archive_path }}</code>
+      </div>
+
+      <!-- Restore hint — we can't do it from the web, but show the command -->
+      <div class="bg-slate-900/60 border border-slate-700/50 rounded-lg px-4 py-3">
+        <p class="text-xs text-slate-500 mb-1.5 uppercase tracking-wider">To restore</p>
+        <code class="text-xs font-mono text-green-400">
+          tar -xf {{ b.archive_path }} -C /path/to/restore/
+        </code>
+      </div>
+
+      <!-- Delete button -->
+      <!--
+        hx-target="closest details" selects the enclosing <details> element.
+        hx-swap="outerHTML" replaces the entire element (removes the card).
+        hx-confirm shows a native browser confirmation dialog.
+      -->
+      <form
+        hx-post="/api/backups/delete"
+        hx-target="closest details"
+        hx-swap="outerHTML"
+        hx-confirm="Delete this backup archive from disk? This cannot be undone."
+        hx-disabled-elt="find button"
+        class="flex justify-end">
+
+        <input type="hidden" name="id" value="{{ b.id }}">
+
+        <button type="submit"
+                class="flex items-center gap-1.5 bg-red-600/80 hover:bg-red-600
+                       text-white text-xs font-semibold px-4 py-2 rounded-lg
+                       transition-colors focus:outline-none focus:ring-2 focus:ring-red-500
+                       disabled:opacity-50 disabled:cursor-not-allowed">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd"
+                  d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z"
+                  clip-rule="evenodd"/>
+          </svg>
+          Delete Archive
+        </button>
+      </form>
+
+    </div>
+  </details>
+  {% endfor %}
+</div>
 {% endif %}
+
+<!-- ── CLI quick-reference ────────────────────────────────────────────────── -->
+<div class="mt-8 bg-slate-900 border border-slate-700/50 rounded-lg p-4">
+  <p class="text-slate-500 text-xs uppercase tracking-wider mb-2">Advanced CLI options</p>
+  <div class="space-y-1 font-mono text-sm">
+    <p><span class="text-slate-600">$</span> <span class="text-green-400">data-fortress backup create</span> <span class="text-slate-300">--category image --compression 9</span></p>
+    <p><span class="text-slate-600">$</span> <span class="text-green-400">data-fortress backup create</span> <span class="text-slate-300">--label "quarterly" --dry-run</span></p>
+    <p><span class="text-slate-600">$</span> <span class="text-green-400">data-fortress backup list</span></p>
+  </div>
+</div>
 
 {% endblock %}
