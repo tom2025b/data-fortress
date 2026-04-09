@@ -453,7 +453,7 @@ fn query_search(
             .filter_map(|r| r.ok())
             .collect()
     } else {
-        stmt.query_map(rusqlite::params![pattern, limit], map_search_row_no_cat)?
+        stmt.query_map(rusqlite::params![pattern, limit], map_search_row)?
             .filter_map(|r| r.ok())
             .collect()
     };
@@ -470,11 +470,6 @@ fn map_search_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SearchRow> {
         category: row.get(3)?,
         modified: row.get::<_, String>(4)?.chars().take(10).collect(),
     })
-}
-
-/// Row mapper for `query_search` (without category param — same columns).
-fn map_search_row_no_cat(row: &rusqlite::Row<'_>) -> rusqlite::Result<SearchRow> {
-    map_search_row(row)
 }
 
 /// Query all backups for the backup history page.
