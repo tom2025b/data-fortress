@@ -34,7 +34,7 @@
 //! compression (useful for cold-storage archives you write once and rarely read).
 
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Write};
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 

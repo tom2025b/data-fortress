@@ -279,7 +279,7 @@ fn should_skip_entry(entry: &walkdir::DirEntry, config: &Config) -> bool {
 fn process_file(
     conn: &Connection,
     path: &Path,
-    config: &Config,
+    _config: &Config,
     opts: &ScanOptions,
     stats: &mut ScanStats,
 ) -> Result<()> {

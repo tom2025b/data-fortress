@@ -31,7 +31,7 @@ use std::process;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tracing::{error, info};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use cli::{Cli, Commands, BackupAction, ConfigAction};
